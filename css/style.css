@@ -1,0 +1,281 @@
+/* =========================================================
+   MiroSQL Studio - Custom Styles & Aesthetics
+   ========================================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Kalam:wght@400;700&display=swap');
+
+/* Infinite Canvas Grid */
+.infinite-grid {
+  background-color: #f8fafc;
+  background-image: radial-gradient(#cbd5e1 1.25px, transparent 1.25px);
+  background-size: 24px 24px;
+}
+
+.dark .infinite-grid {
+  background-color: #0b0f19;
+  background-image: radial-gradient(#334155 1.25px, transparent 1.25px);
+}
+
+/* Handwriting Font for Miro Sticky Notes */
+.font-handwriting {
+  font-family: 'Kalam', cursive, sans-serif;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Sticky Note Themes */
+.sticky-theme-yellow {
+  background: #fef9c3;
+  border-color: #fde047;
+  color: #713f12;
+}
+.sticky-theme-green {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #14532d;
+}
+.sticky-theme-blue {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+  color: #0c4a6e;
+}
+.sticky-theme-pink {
+  background: #fce7f3;
+  border-color: #f472b6;
+  color: #831843;
+}
+.sticky-theme-purple {
+  background: #f3e8ff;
+  border-color: #d8b4fe;
+  color: #581c87;
+}
+.sticky-theme-orange {
+  background: #ffedd5;
+  border-color: #fdba74;
+  color: #7c2d12;
+}
+
+/* Board Item Shadows & States */
+.board-item {
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08), 0 8px 10px -6px rgba(15, 23, 42, 0.04);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.board-item.selected {
+  box-shadow: 0 0 0 2px #6366f1, 0 20px 30px -10px rgba(99, 102, 241, 0.25) !important;
+}
+
+.board-item.locked {
+  border-style: dashed !important;
+}
+
+/* 8-Direction Resize Handles */
+.resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #6366f1;
+  border: 2px solid #ffffff;
+  border-radius: 3px;
+  z-index: 30;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+
+.board-item:hover .resize-handle,
+.board-item.selected .resize-handle {
+  opacity: 1;
+}
+
+.board-item.locked .resize-handle {
+  display: none !important;
+}
+
+/* Handle Positions & Cursors */
+.resize-handle-n {
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: n-resize;
+}
+.resize-handle-s {
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: s-resize;
+}
+.resize-handle-e {
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: e-resize;
+}
+.resize-handle-w {
+  left: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: w-resize;
+}
+.resize-handle-ne {
+  top: -5px;
+  right: -5px;
+  cursor: ne-resize;
+}
+.resize-handle-nw {
+  top: -5px;
+  left: -5px;
+  cursor: nw-resize;
+}
+.resize-handle-se {
+  bottom: -5px;
+  right: -5px;
+  cursor: se-resize;
+}
+.resize-handle-sw {
+  bottom: -5px;
+  left: -5px;
+  cursor: sw-resize;
+}
+
+/* Modal Backdrop */
+.modal-backdrop {
+  background-color: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+/* SQL Code Editor Area */
+.sql-editor-textarea {
+  tab-size: 2;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Drag and Drop SQL Blocks */
+.sql-block-pill {
+  user-select: none;
+  cursor: grab;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.sql-block-pill:active {
+  cursor: grabbing;
+  transform: scale(0.96);
+}
+
+.sql-dropzone {
+  min-height: 48px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.sql-dropzone.drag-over {
+  background-color: rgba(99, 102, 241, 0.1) !important;
+  border-color: #6366f1 !important;
+}
+
+/* ==========================================
+   Non-Modal Floating Windows
+   ========================================== */
+.floating-window {
+  box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.15);
+  animation: floatPopIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes floatPopIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.floating-window-handle {
+  cursor: grab;
+}
+.floating-window-handle:active {
+  cursor: grabbing;
+}
+
+/* ==========================================
+   ERD Schema Connectors & Badges
+   ========================================== */
+.erd-relation-path {
+  stroke-dasharray: 6 3;
+  animation: erdDashFlow 30s linear infinite;
+  transition: stroke-width 0.15s ease, stroke 0.15s ease, filter 0.15s ease;
+}
+
+@keyframes erdDashFlow {
+  to {
+    stroke-dashoffset: -900;
+  }
+}
+
+.erd-relation-path.highlighted {
+  stroke: #4f46e5 !important;
+  stroke-width: 3.5px !important;
+  filter: drop-shadow(0 0 8px rgba(79, 70, 229, 0.6)) !important;
+  stroke-dasharray: none !important;
+}
+
+.erd-badge-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  user-select: none;
+  pointer-events: none;
+}
+
+.erd-table-highlight {
+  box-shadow: 0 0 0 2.5px #6366f1, 0 15px 30px -5px rgba(99, 102, 241, 0.3) !important;
+}
+
+.erd-col-highlight {
+  background-color: rgba(99, 102, 241, 0.25) !important;
+  outline: 2px solid #6366f1 !important;
+  border-radius: 6px;
+  font-weight: 700 !important;
+}
+
+.erd-relation-path.highlighted {
+  stroke: #ec4899 !important;
+  stroke-width: 3.5px !important;
+  filter: drop-shadow(0 0 6px rgba(236, 72, 153, 0.8));
+}
+
+.erd-origin-dot {
+  filter: drop-shadow(0 0 4px #10b981);
+}
+
+.erd-target-dot {
+  filter: drop-shadow(0 0 4px #6366f1);
+}
+
+/* ==========================================
+   Collaboration Cursors & Spotlight
+   ========================================== */
+.collab-peer-cursor, .collab-simulated-cursor {
+  will-change: transform;
+  pointer-events: none;
+}
+
+.collab-simulated-cursor {
+  transition: transform 1.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.collab-peer-cursor {
+  transition: transform 70ms linear;
+}
+
