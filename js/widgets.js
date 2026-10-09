@@ -2600,3 +2600,5 @@ const Widgets = (() => {
     syncItemsFromState
   };
 })();
+
+window.Widgets = Widgets;

@@ -1013,3 +1013,5 @@ const FloatingWindows = (() => {
     updateTablesList: updateAddColumnTablesDropdown
   };
 })();
+
+window.FloatingWindows = FloatingWindows;

@@ -25,6 +25,8 @@ const MIME_TYPES = {
 const sseClients = new Map();
 // Active peer states: clientId -> { id, name, role, color, wx, wy, spotlight, ts }
 const peerStates = new Map();
+const roomStates = new Map();
+const normalizeRoom = value => String(value || 'default').slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
 
 // Periodic cleanup of stale peers (no update in 15 seconds)
 setInterval(() => {
@@ -32,15 +34,15 @@ setInterval(() => {
   for (const [id, state] of peerStates.entries()) {
     if (state.ts < cutoff) {
       peerStates.delete(id);
-      broadcast({ type: 'leave', senderId: id });
+      broadcast({ type: 'leave', senderId: id }, id, state.room);
     }
   }
 }, 5000);
 
-function broadcast(packet, exceptClientId = null) {
+function broadcast(packet, exceptClientId = null, room = 'default') {
   const data = `data: ${JSON.stringify(packet)}\n\n`;
   for (const [id, client] of sseClients.entries()) {
-    if (id === exceptClientId) continue;
+    if (id === exceptClientId || client.room !== room) continue;
     try {
       client.res.write(data);
     } catch (err) {
@@ -56,6 +58,7 @@ const server = http.createServer((req, res) => {
   // 1. SSE Stream: GET /api/collab/stream
   if (req.method === 'GET' && pathname === '/api/collab/stream') {
     const clientId = urlObj.searchParams.get('id') || ('client_' + Math.random().toString(36).substring(2, 8));
+    const room = normalizeRoom(urlObj.searchParams.get('room'));
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -65,18 +68,21 @@ const server = http.createServer((req, res) => {
     });
     res.write(': connected\n\n');
 
-    sseClients.set(clientId, { res, id: clientId });
+    sseClients.set(clientId, { res, id: clientId, room });
 
     // Send existing peers snapshot to newly connected client
-    const existingPeers = Array.from(peerStates.values());
+    const existingPeers = Array.from(peerStates.values()).filter(peer => peer.room === room);
     if (existingPeers.length > 0) {
       res.write(`data: ${JSON.stringify({ type: 'peers_snapshot', peers: existingPeers })}\n\n`);
     }
 
+    const saved = roomStates.get(room) || {};
+    res.write(`data: ${JSON.stringify({ type: 'room_snapshot', room, ...saved })}\n\n`);
     req.on('close', () => {
+      if (sseClients.get(clientId)?.res !== res) return;
       sseClients.delete(clientId);
       peerStates.delete(clientId);
-      broadcast({ type: 'leave', senderId: clientId });
+      broadcast({ type: 'leave', senderId: clientId }, clientId, room);
     });
     return;
   }
@@ -89,6 +95,13 @@ const server = http.createServer((req, res) => {
       try {
         const packet = JSON.parse(body);
         const senderId = packet._senderId || packet.senderId || packet.id;
+        const room = normalizeRoom(packet.room);
+        const client = sseClients.get(senderId);
+        if (!client || client.room !== room) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Connect to the room stream before posting messages' }));
+          return;
+        }
 
         // If it's a cursor heartbeat/position update, update in-memory state
         if (packet.type === 'cursor' && senderId) {
@@ -100,16 +113,23 @@ const server = http.createServer((req, res) => {
             wx: packet.wx,
             wy: packet.wy,
             spotlight: !!packet.spotlight,
+            room,
             ts: Date.now()
           });
         }
 
+        if (packet.type === 'pages_sync' || packet.type === 'db_sync') {
+          const current = roomStates.get(room) || {};
+          if (packet.type === 'pages_sync') current.pages = packet.pages;
+          if (packet.type === 'db_sync') { current.tables = packet.tables; current.tableSchemas = packet.tableSchemas; }
+          roomStates.set(room, current);
+        }
         if (packet.type === 'leave' && senderId) {
           peerStates.delete(senderId);
         }
 
         // Broadcast to all other connected tabs / browsers
-        broadcast(packet, senderId);
+        broadcast(packet, senderId, room);
 
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify({ ok: true }));

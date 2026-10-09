@@ -497,3 +497,5 @@ const Pages = (() => {
     getPages: () => pages
   };
 })();
+
+window.Pages = Pages;

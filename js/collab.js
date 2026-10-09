@@ -20,7 +20,9 @@ const Collab = (() => {
   const IDENTITY_KEY = 'mirosql_user_identity_v1';
   const SESSION_KEY = 'mirosql_session_identity_v1';
   const CURSOR_PREFIX = 'mirosql_cursor_';
-  const SYNC_KEY = 'mirosql_collab_sync_v5';
+  const roomId = (new URLSearchParams(window.location.search).get('room') || 'default').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 100) || 'default';
+  const SYNC_KEY = 'mirosql_collab_sync_v5_' + roomId;
+  const SERVER_URL = (window.MIROSQL_COLLAB_SERVER || window.location.origin).replace(/\/$/, '');
 
   // Palette
   const USER_COLORS = [
@@ -51,7 +53,7 @@ const Collab = (() => {
   let bc = null;
   try {
     if (typeof BroadcastChannel !== 'undefined') {
-      bc = new BroadcastChannel('mirosql_collab_v5');
+      bc = new BroadcastChannel('mirosql_collab_v5_' + roomId);
     }
   } catch (e) {}
 
@@ -243,12 +245,12 @@ const Collab = (() => {
   // ==========================================
   function initServerConnection() {
     try {
-      const sseUrl = `/api/collab/stream?id=${encodeURIComponent(myClientId)}`;
+      const sseUrl = `${SERVER_URL}/api/collab/stream?id=${encodeURIComponent(myClientId)}&room=${encodeURIComponent(roomId)}`;
       sseSource = new EventSource(sseUrl);
 
       sseSource.onopen = () => {
         isServerConnected = true;
-        console.log('[Collab] Connected to SSE server');
+        console.log('[Collab] Connected to SSE server, room:', roomId);
       };
 
       sseSource.onmessage = (e) => {
@@ -270,10 +272,10 @@ const Collab = (() => {
   function sendToServer(packet) {
     if (!isReady) return;
     try {
-      fetch('/api/collab/message', {
+      fetch(`${SERVER_URL}/api/collab/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(packet)
+        body: JSON.stringify({ ...packet, room: roomId, _senderId: myClientId })
       }).catch(() => {});
     } catch (e) {}
   }
@@ -287,7 +289,8 @@ const Collab = (() => {
       ...packet,
       _id: `${myClientId}_${msgSeq}_${Date.now()}`,
       _senderId: myClientId,
-      _time: Date.now()
+      _time: Date.now(),
+      room: roomId
     };
 
     // 1. Send to local BroadcastChannel
@@ -308,6 +311,14 @@ const Collab = (() => {
 
   function handleIncomingPacket(packet) {
     if (!packet || typeof packet !== 'object') return;
+    if (packet.room && packet.room !== roomId) return;
+    if (packet.type === 'room_snapshot') {
+      if (Array.isArray(packet.pages) && window.Pages) Pages.onRemotePagesUpdate(packet.pages, null);
+      if (packet.tables && window.DB) DB.onRemoteDbUpdate(packet.tables, packet.tableSchemas);
+      if (!packet.pages && window.Pages) Collab.broadcastPagesUpdate(Pages.getPages(), Pages.getActivePage()?.id);
+      if (!packet.tables && window.DB) Collab.broadcastDbUpdate(DB.getTables(), DB.getSchemaMetadata());
+      return;
+    }
     const senderId = packet._senderId || packet.senderId || packet.id;
     if (senderId === myClientId) return; // skip self
 
@@ -363,6 +374,7 @@ const Collab = (() => {
       wx: lastWorldX,
       wy: lastWorldY,
       spotlight: isSpotlightActive,
+      room: roomId,
       ts: now
     };
 
@@ -409,7 +421,7 @@ const Collab = (() => {
         const raw = localStorage.getItem(key);
         if (!raw) continue;
         const data = JSON.parse(raw);
-        if (!data || !data.ts) continue;
+        if (!data || !data.ts || (data.room && data.room !== roomId)) continue;
 
         // Clean up stale cursors (> 12 seconds old)
         if (now - data.ts > 12000) {
@@ -895,7 +907,8 @@ const Collab = (() => {
         try {
           const peerId = e.key.substring(CURSOR_PREFIX.length);
           if (peerId !== myClientId) {
-            renderPeerCursor(peerId, JSON.parse(e.newValue), Date.now());
+            const peer = JSON.parse(e.newValue);
+            if (!peer.room || peer.room === roomId) renderPeerCursor(peerId, peer, Date.now());
           }
         } catch (err) {}
       } else if (e.key === SYNC_KEY) {

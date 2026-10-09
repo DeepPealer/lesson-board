@@ -451,6 +451,7 @@ const App = (() => {
     showToast
   };
 })();
+window.App = App;
 
 // Bootstrap
 window.addEventListener('DOMContentLoaded', () => {
