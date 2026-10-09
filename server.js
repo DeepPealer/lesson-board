@@ -126,13 +126,32 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// Quick Tunnels may forward a loopback Host header while browsers send their
+// public trycloudflare.com Origin. Permit only that known proxy case.
+function isAllowedWebSocketOrigin(req) {
+  if (!req.headers.origin) return true; // non-browser clients
+  let origin;
+  try { origin = new URL(req.headers.origin); }
+  catch { return false; }
+  if (origin.protocol !== 'http:' && origin.protocol !== 'https:') return false;
+
+  const host = String(req.headers.host || '').toLowerCase();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase();
+  if (origin.host.toLowerCase() === host || (forwardedHost && origin.host.toLowerCase() === forwardedHost)) return true;
+
+  // The Cloudflare Quick Tunnel hostname is the effective public origin.
+  const isQuickTunnel = origin.protocol === 'https:' && /^[a-z0-9-]+\.trycloudflare\.com$/i.test(origin.hostname);
+  const loopbackHost = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host);
+  return isQuickTunnel && loopbackHost;
+}
+
 server.on('upgrade', (req, socket, head) => {
   let url;
   try {
     url = new URL(req.url, 'http://localhost');
     if (url.pathname !== '/api/collab/ws') throw new Error('Unknown WebSocket endpoint');
-    // Block cross-origin browser requests; Cloudflare forwards the public Host header.
-    if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) {
+    if (!isAllowedWebSocketOrigin(req)) {
+      console.warn('[MiroSQL] Rejected WebSocket Origin:', req.headers.origin, 'Host:', req.headers.host);
       throw new Error('Cross-origin WebSocket request');
     }
   } catch {

@@ -22,7 +22,6 @@ const Collab = (() => {
   const CURSOR_PREFIX = 'mirosql_cursor_';
   const roomId = (new URLSearchParams(window.location.search).get('room') || 'default').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 100) || 'default';
   const SYNC_KEY = 'mirosql_collab_sync_v5_' + roomId;
-  const SERVER_URL = (window.MIROSQL_COLLAB_SERVER || window.location.origin).replace(/\/$/, '');
 
   // Palette
   const USER_COLORS = [
@@ -57,8 +56,7 @@ const Collab = (() => {
     }
   } catch (e) {}
 
-  // SSE EventSource for server-assisted collaboration
-  let sseSource = null;
+  // WebSocket is the cross-browser transport. BroadcastChannel remains a local fallback.
   let isServerConnected = false;
 
   // Message dedup
@@ -248,15 +246,25 @@ const Collab = (() => {
     const url = protocol + '//' + window.location.host + '/api/collab/ws?id=' +
       encodeURIComponent(myClientId) + '&room=' + encodeURIComponent(roomId);
     socket = new WebSocket(url);
-    socket.onopen = () => { isServerConnected = true; };
+    socket.onopen = () => {
+      isServerConnected = true;
+      updateOnlineIndicator();
+      console.info('[Collab] WebSocket connected, awaiting room state:', roomId);
+    };
     socket.onmessage = event => {
       try { handleIncomingPacket(JSON.parse(event.data)); }
-      catch (error) { console.error('[Collab] Invalid message:', error); }
+      catch (error) { console.error('[Collab] Failed to process server message:', error); }
     };
-    socket.onerror = () => { isServerConnected = false; };
-    socket.onclose = () => {
+    socket.onerror = () => {
+      isServerConnected = false;
+      updateOnlineIndicator();
+      console.warn('[Collab] WebSocket connection failed:', url);
+    };
+    socket.onclose = event => {
       isServerConnected = false;
       roomReady = false;
+      updateOnlineIndicator();
+      console.warn('[Collab] WebSocket closed:', event.code, event.reason || '(no reason)');
       if (isReady) setTimeout(initServerConnection, 2000);
     };
   }
@@ -270,7 +278,8 @@ const Collab = (() => {
   // Unified Message Dispatch & Reception
   // ==========================================
   function broadcastMessage(packet) {
-    if (!roomReady && packet.type !== 'cursor') return;
+    // Local tabs must continue to share edits even while the server is offline.
+    if (!isReady) return;
     msgSeq++;
     const enriched = {
       ...packet,
@@ -301,6 +310,7 @@ const Collab = (() => {
     if (packet.room && packet.room !== roomId) return;
     if (packet.type === 'room_snapshot') {
       roomReady = true;
+      updateOnlineIndicator();
       if (Array.isArray(packet.pages) && window.Pages) Pages.onRemotePagesUpdate(packet.pages, null);
       if (packet.tables && window.DB) DB.onRemoteDbUpdate(packet.tables, packet.tableSchemas);
       if (!packet.pages && window.Pages) Collab.broadcastPagesUpdate(Pages.getPages(), Pages.getActivePage()?.id);
@@ -581,16 +591,32 @@ const Collab = (() => {
     const textEl = document.getElementById('collab-online-text');
     if (!indicator || !textEl) return;
 
-    const totalCount = 1 + remotePeers.size;
     indicator.classList.remove('hidden');
     indicator.classList.add('flex');
 
+    const online = roomReady && socket && socket.readyState === WebSocket.OPEN;
+    const dot = indicator.querySelector('span.relative > span:last-child');
+    const ping = indicator.querySelector('span.relative > span:first-child');
+    if (dot) {
+      dot.classList.toggle('bg-emerald-500', online);
+      dot.classList.toggle('bg-amber-500', !online);
+    }
+    if (ping) ping.classList.toggle('hidden', !online);
+
+    const totalCount = 1 + remotePeers.size;
+    if (!online) {
+      textEl.textContent = remotePeers.size ? totalCount + ' локально · сервер отключён' : 'Нет связи с сервером';
+      indicator.title = 'Курсоры между вкладками могут работать локально. Откройте F12 → Network → WS и проверьте /api/collab/ws.';
+      return;
+    }
+
+    indicator.title = 'WebSocket подключён к комнате ' + roomId;
     if (remotePeers.size === 0) {
       textEl.textContent = '1 онлайн';
     } else {
       const peerNames = Array.from(remotePeers.values()).map(p => p.name).slice(0, 2);
-      const othersText = remotePeers.size > 2 ? ` +${remotePeers.size - 2}` : '';
-      textEl.textContent = `${totalCount} онлайн (${peerNames.join(', ')}${othersText})`;
+      const othersText = remotePeers.size > 2 ? ' +' + (remotePeers.size - 2) : '';
+      textEl.textContent = totalCount + ' онлайн (' + peerNames.join(', ') + othersText + ')';
     }
   }
 
@@ -947,6 +973,7 @@ const Collab = (() => {
     getClientId: () => myClientId,
     getPeers: () => Array.from(remotePeers.values()),
     getUserName: () => userName,
+    getConnectionStatus: () => ({ room: roomId, websocketOpen: isServerConnected, roomReady, state: socket?.readyState ?? -1 }),
     getUserColor: () => userColor
   };
 })();

@@ -9,7 +9,6 @@ const Widgets = (() => {
   let selectedId = null;
   let activeDrag = null;
   let activeResize = null;
-  let restoringItems = false;
 
   const STICKY_THEMES = [
     { name: 'yellow', cls: 'sticky-theme-yellow', label: 'Желтый' },
@@ -287,7 +286,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -402,7 +401,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -800,7 +799,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -1103,7 +1102,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -1443,7 +1442,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -1768,7 +1767,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -2057,7 +2056,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -2293,7 +2292,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && !restoringItems && window.Collab) {
+    if (!fromRemote && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -2360,7 +2359,6 @@ const Widgets = (() => {
   }
 
   function saveBoard() {
-    if (restoringItems) return;
     if (window.Pages) Pages.saveCurrentPageState();
     if (window.App) window.App.saveState();
   }
@@ -2377,8 +2375,6 @@ const Widgets = (() => {
   }
 
   function loadItems(loadedItems) {
-    restoringItems = true;
-    try {
     clearAll();
     if (!loadedItems) return;
     loadedItems.forEach(item => {
@@ -2403,7 +2399,6 @@ const Widgets = (() => {
       }
     });
     updateErdConnectors();
-    } finally { restoringItems = false; }
   }
 
   function mountRemoteItem(item) {
@@ -2433,8 +2428,7 @@ const Widgets = (() => {
       createImage(item.x, item.y, item.src, item.width, item.height, item.id, item.isLocked, true);
     }
     updateErdConnectors();
-    } finally { restoringItems = wasRestoring; }
-    if (window.Pages) Pages.saveCurrentPageState(false);
+    if (window.Pages) Pages.saveCurrentPageState();
   }
 
   function updateRemoteItemText(id, field, value) {
@@ -2488,8 +2482,9 @@ const Widgets = (() => {
     el.style.top = `${y}px`;
     if (width) el.style.width = `${width}px`;
     if (height) el.style.height = `${height}px`;
-    if (item && item.type === 'erd_table') updateErdConnectors();
-    if (window.Pages) Pages.saveCurrentPageState(false);
+    if (item && item.type === 'erd_table') {
+      updateErdConnectors();
+    }
   }
 
   function deleteRemoteItem(id) {
