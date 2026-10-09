@@ -4,9 +4,14 @@
   "private": true,
   "description": "Local multiplayer SQL lesson board",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/collaboration.test.js",
+    "test:browser": "node tests/browser-collaboration.test.js"
   },
   "dependencies": {
     "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2"
   }
 }

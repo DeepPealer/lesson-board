@@ -68,7 +68,7 @@ const Pages = (() => {
       }
     });
 
-    savePagesToStorage();
+    savePagesToStorage(true);
   }
 
   function getActivePage() {
@@ -126,10 +126,10 @@ const Pages = (() => {
       }
     ];
     activePageId = 'page_1';
-    savePagesToStorage();
+    savePagesToStorage(false);
   }
 
-  function saveCurrentPageState(broadcast = true) {
+  function saveCurrentPageState(broadcast = false) {
     const current = getActivePage();
     if (!current) return;
 
@@ -217,7 +217,7 @@ const Pages = (() => {
       items: []
     };
     pages.push(newPage);
-    savePagesToStorage();
+    savePagesToStorage(true);
     switchToPage(newId, false);
   }
 
@@ -231,7 +231,7 @@ const Pages = (() => {
       if (activePageId === pageId) {
         activePageId = pages[0].id;
       }
-      savePagesToStorage();
+      savePagesToStorage(true);
       switchToPage(activePageId, false);
     }
   }
@@ -242,7 +242,7 @@ const Pages = (() => {
     const newTitle = prompt('Введите название страницы:', p.title);
     if (newTitle && newTitle.trim()) {
       p.title = newTitle.trim();
-      savePagesToStorage();
+      savePagesToStorage(true);
       renderPageTabs();
     }
   }
@@ -326,7 +326,7 @@ const Pages = (() => {
       });
       Widgets.updateErdConnectors();
       page.items = Widgets.getItems();
-      savePagesToStorage();
+      savePagesToStorage(true);
       return;
     }
 
@@ -360,7 +360,7 @@ const Pages = (() => {
 
     Widgets.updateErdConnectors();
     page.items = Widgets.getItems();
-    savePagesToStorage();
+    savePagesToStorage(true);
   }
 
   // Default seed for Lesson 1
@@ -413,7 +413,7 @@ const Pages = (() => {
     const p1 = pages.find(p => p.id === 'page_1');
     if (p1) {
       p1.items = Widgets.getItems();
-      savePagesToStorage();
+      savePagesToStorage(true);
     }
   }
 
@@ -455,7 +455,7 @@ const Pages = (() => {
     const p2 = pages.find(p => p.id === 'page_2');
     if (p2) {
       p2.items = Widgets.getItems();
-      savePagesToStorage();
+      savePagesToStorage(true);
     }
   }
 
@@ -480,7 +480,7 @@ const Pages = (() => {
       Widgets.createSticky(80, 80, `Страница: ${p.title}`, 'yellow');
     }
     p.items = Widgets.getItems();
-    savePagesToStorage();
+    savePagesToStorage(true);
     renderPageTabs();
     if (window.App) window.App.showToast(`Страница «${p.title}» сброшена`);
   }

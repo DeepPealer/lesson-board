@@ -271,7 +271,7 @@ const Widgets = (() => {
   // 1. Sticky Note Component
   // ==========================================
   function createSticky(x, y, content = 'Заметка... Нажмите чтобы писать!', themeName = 'yellow', width = 250, height = 220, existingId = null, isLocked = false, fromRemote = false) {
-    const id = existingId || 'sticky_' + Date.now();
+    const id = existingId || 'sticky_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
     const currentTheme = STICKY_THEMES.find(t => t.name === themeName) || STICKY_THEMES[0];
 
     const itemData = {
@@ -763,6 +763,7 @@ const Widgets = (() => {
       itemData.isLocked = !itemData.isLocked;
       updateItemLockUI(id, itemData.isLocked);
       saveBoard();
+      if (window.Collab) Collab.broadcastItemLock(id, itemData.isLocked);
     });
 
     const btnDelete = el.querySelector('.btn-delete-item');
@@ -1509,6 +1510,7 @@ const Widgets = (() => {
     titleInput.addEventListener('input', () => {
       itemData.title = titleInput.value;
       saveBoard();
+      if (window.Collab) Collab.broadcastItemText(id, 'title', titleInput.value);
     });
 
     const container = el.querySelector('.checklist-items-container');
@@ -2361,8 +2363,7 @@ const Widgets = (() => {
 
   function saveBoard() {
     if (restoringItems) return;
-    if (window.Pages) Pages.saveCurrentPageState();
-    if (window.App) window.App.saveState();
+    if (window.Pages) Pages.saveCurrentPageState(false);
   }
 
   function clearAll() {

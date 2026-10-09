@@ -17,4 +17,16 @@ jobs:
           node --check js/collab.js
           node --check js/widgets.js
           node --check js/pages.js
+          node --check tests/browser-collaboration.test.js
       - run: node tests/collaboration.test.js
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: node tests/browser-collaboration.test.js
