@@ -177,7 +177,9 @@ const DB = (() => {
   function onRemoteDbUpdate(remoteTables, remoteSchemas) {
     if (!remoteTables) return;
     tables = remoteTables;
-    if (remoteSchemas) tableSchemas = remoteSchemas;
+    if (remoteSchemas) {
+      tableSchemas = Object.fromEntries(Object.entries(remoteSchemas).map(([name, columns]) => [name, Array.isArray(columns) ? columns : (Array.isArray(columns?.columns) ? columns.columns : [])]));
+    }
     syncToAlaSQL();
     listeners.forEach(fn => {
       try { fn(); } catch (e) { console.error('DB listener error:', e); }
@@ -756,6 +758,7 @@ const DB = (() => {
     addRow,
     deleteRow,
     getSchemaMetadata,
+    getTableSchemas: () => tableSchemas,
     getRelationships,
     explainSqlError,
     checkQueryAgainstExpected,

@@ -314,7 +314,7 @@ const Collab = (() => {
       if (Array.isArray(packet.pages) && window.Pages) Pages.onRemotePagesUpdate(packet.pages, null);
       if (packet.tables && window.DB) DB.onRemoteDbUpdate(packet.tables, packet.tableSchemas);
       if (!packet.pages && window.Pages) Collab.broadcastPagesUpdate(Pages.getPages(), Pages.getActivePage()?.id);
-      if (!packet.tables && window.DB) Collab.broadcastDbUpdate(DB.getTables(), DB.getSchemaMetadata());
+      if (!packet.tables && window.DB) Collab.broadcastDbUpdate(DB.getTables(), DB.getTableSchemas());
       return;
     }
     const senderId = packet._senderId || packet.senderId || packet.id;
