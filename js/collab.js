@@ -60,7 +60,6 @@ const Collab = (() => {
   // SSE EventSource for server-assisted collaboration
   let sseSource = null;
   let isServerConnected = false;
-  let roomReady = false;
 
   // Message dedup
   const seenMessages = new Map();
@@ -241,44 +240,30 @@ const Collab = (() => {
     startCollaboration();
   }
 
-  // ==========================================
-  // Transport 1: Server-Sent Events (SSE)
-  // ==========================================
+  // WebSocket transport (works behind Cloudflare Tunnel).
+  let socket = null;
+  let roomReady = false;
   function initServerConnection() {
-    try {
-      const sseUrl = `${SERVER_URL}/api/collab/stream?id=${encodeURIComponent(myClientId)}&room=${encodeURIComponent(roomId)}`;
-      sseSource = new EventSource(sseUrl);
-
-      sseSource.onopen = () => {
-        isServerConnected = true;
-        console.log('[Collab] Connected to SSE server, room:', roomId);
-      };
-
-      sseSource.onmessage = (e) => {
-        try {
-          const packet = JSON.parse(e.data);
-          handleIncomingPacket(packet);
-        } catch (err) {}
-      };
-
-      sseSource.onerror = () => {
-        isServerConnected = false;
-        // EventSource automatically attempts reconnection
-      };
-    } catch (e) {
-      console.warn('[Collab] SSE connection not available:', e);
-    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = protocol + '//' + window.location.host + '/api/collab/ws?id=' +
+      encodeURIComponent(myClientId) + '&room=' + encodeURIComponent(roomId);
+    socket = new WebSocket(url);
+    socket.onopen = () => { isServerConnected = true; };
+    socket.onmessage = event => {
+      try { handleIncomingPacket(JSON.parse(event.data)); }
+      catch (error) { console.error('[Collab] Invalid message:', error); }
+    };
+    socket.onerror = () => { isServerConnected = false; };
+    socket.onclose = () => {
+      isServerConnected = false;
+      roomReady = false;
+      if (isReady) setTimeout(initServerConnection, 2000);
+    };
   }
 
   function sendToServer(packet) {
-    if (!isReady) return;
-    try {
-      fetch(`${SERVER_URL}/api/collab/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...packet, room: roomId, _senderId: myClientId })
-      }).catch(() => {});
-    } catch (e) {}
+    if (!isReady || !roomReady || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ ...packet, room: roomId, _senderId: myClientId }));
   }
 
   // ==========================================
@@ -353,6 +338,7 @@ const Collab = (() => {
 
     // Dedup non-cursor messages
     if (isDuplicate(packet._id)) return;
+    if (packet.pageId && packet.pageId !== Pages.getActivePage()?.id) return;
 
     // Handle board sync commands
     handleSyncMessage(packet);
@@ -884,15 +870,15 @@ const Collab = (() => {
   // ==========================================
   // Public Broadcasting Helpers
   // ==========================================
-  function broadcastItemText(id, field, value) { broadcastMessage({ type: 'item_text', id, field, value }); }
-  function broadcastItemMove(id, x, y, width, height) { broadcastMessage({ type: 'item_move', id, x, y, width, height }); }
-  function broadcastItemCreate(item) { broadcastMessage({ type: 'item_create', item }); }
-  function broadcastItemDelete(id) { broadcastMessage({ type: 'item_delete', id }); }
-  function broadcastItemLock(id, isLocked) { broadcastMessage({ type: 'item_lock', id, isLocked }); }
-  function broadcastItemUpdate(id, data) { broadcastMessage({ type: 'item_update', id, data }); }
+  function broadcastItemText(id, field, value) { broadcastMessage({ type: 'item_text', id, field, value, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemMove(id, x, y, width, height) { broadcastMessage({ type: 'item_move', id, x, y, width, height, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemCreate(item) { broadcastMessage({ type: 'item_create', id: item.id, item, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemDelete(id) { broadcastMessage({ type: 'item_delete', id, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemLock(id, isLocked) { broadcastMessage({ type: 'item_lock', id, isLocked, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemUpdate(id, data) { broadcastMessage({ type: 'item_update', id, data, pageId: Pages.getActivePage()?.id }); }
   function broadcastPagesUpdate(pages, activePageId) { broadcastMessage({ type: 'pages_sync', pages, activePageId }); }
   function broadcastDbUpdate(tables, tableSchemas) { broadcastMessage({ type: 'db_sync', tables, tableSchemas }); }
-  function broadcastStroke(stroke) { broadcastMessage({ type: 'stroke_add', stroke }); }
+  function broadcastStroke(stroke) { broadcastMessage({ type: 'stroke_add', stroke, pageId: Pages.getActivePage()?.id }); }
 
   // ==========================================
   // Init
