@@ -279,3 +279,132 @@
   transition: transform 70ms linear;
 }
 
+/* ==========================================
+   Welcome / Onboarding Modal
+   ========================================== */
+.welcome-backdrop {
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.75), rgba(79, 70, 229, 0.3));
+  backdrop-filter: blur(12px);
+  animation: welcomeBackdropIn 0.4s ease-out;
+}
+
+@keyframes welcomeBackdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.welcome-card {
+  animation: welcomeCardIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes welcomeCardIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.welcome-glow {
+  position: absolute;
+  inset: -2px;
+  border-radius: 24px;
+  background: linear-gradient(135deg, #6366f1, #f59e0b, #10b981, #6366f1);
+  background-size: 400% 400%;
+  animation: welcomeGlowRotate 6s ease infinite;
+  opacity: 0.6;
+  filter: blur(8px);
+  z-index: -1;
+}
+
+@keyframes welcomeGlowRotate {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.welcome-card-inner {
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(20px);
+  border-radius: 22px;
+  padding: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(99, 102, 241, 0.08);
+}
+
+.dark .welcome-card-inner {
+  background: rgba(15, 23, 42, 0.97);
+  border-color: rgba(100, 116, 139, 0.2);
+}
+
+.welcome-role-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1.25rem 1rem;
+  border-radius: 16px;
+  border: 2px solid #e2e8f0;
+  background: #f8fafc;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.dark .welcome-role-card {
+  border-color: #334155;
+  background: #1e293b;
+}
+
+.welcome-role-card:hover {
+  border-color: #a5b4fc;
+  background: #eef2ff;
+  transform: translateY(-2px);
+}
+
+.dark .welcome-role-card:hover {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.welcome-role-card.selected {
+  border-color: #6366f1;
+  background: #eef2ff;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15), 0 8px 20px -4px rgba(99, 102, 241, 0.2);
+  transform: translateY(-2px);
+}
+
+.dark .welcome-role-card.selected {
+  border-color: #818cf8;
+  background: rgba(99, 102, 241, 0.15);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+
+.welcome-role-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.15);
+  transition: box-shadow 0.2s ease;
+}
+
+.welcome-submit-btn {
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  box-shadow: 0 4px 14px -2px rgba(99, 102, 241, 0.4);
+}
+
+.welcome-submit-btn:not(:disabled):hover {
+  background: linear-gradient(135deg, #4f46e5, #4338ca);
+  box-shadow: 0 8px 24px -4px rgba(99, 102, 241, 0.5);
+  transform: translateY(-1px);
+}
+
+.welcome-submit-btn:not(:disabled):active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px -2px rgba(99, 102, 241, 0.4);
+}
+

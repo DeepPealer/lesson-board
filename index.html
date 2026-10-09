@@ -69,8 +69,17 @@
     <!-- Right Header Actions: Role, Tools & DB Manager -->
     <div class="pointer-events-auto flex items-center gap-2">
       <!-- Role Switcher (Teacher / Student) -->
-      <div id="role-badge" title="Кликните чтобы сменить роль (Преподаватель / Ученик)" class="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5 cursor-pointer hover:shadow-sm transition select-none">
+      <div id="role-badge" title="Кликните чтобы сменить роль (Преподаватель / Ученик). Двойной клик — изменить имя" class="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5 cursor-pointer hover:shadow-sm transition select-none">
         <span id="role-text">👨‍🏫 Преподаватель</span>
+      </div>
+
+      <!-- Online Collaborators Indicator -->
+      <div id="collab-online-indicator" title="Участники онлайн на этой доске" class="hidden items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-white/95 dark:bg-slate-900/95 backdrop-blur-md text-slate-700 dark:text-slate-200 rounded-xl shadow-sm border border-slate-200/90 dark:border-slate-800 select-none">
+        <span class="relative flex h-2 w-2">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+        </span>
+        <span id="collab-online-text">1 онлайн</span>
       </div>
 
       <!-- Follow Mode Button (Student view) -->
@@ -335,6 +344,82 @@
   <!-- Hidden File Input for Image Upload -->
   <input type="file" id="image-file-input" accept="image/*" class="hidden" />
 
+  <!-- Welcome / Onboarding Modal -->
+  <div id="welcome-modal" class="fixed inset-0 z-[9999] flex items-center justify-center hidden">
+    <div class="welcome-backdrop absolute inset-0"></div>
+    <div class="welcome-card relative z-10 w-full max-w-md mx-4">
+      <!-- Animated Glow Ring -->
+      <div class="welcome-glow"></div>
+      <div class="welcome-card-inner">
+        <!-- Header -->
+        <div class="text-center mb-6">
+          <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-amber-400 shadow-lg shadow-indigo-500/30 mb-4">
+            <i data-lucide="layout-dashboard" class="w-8 h-8 text-white"></i>
+          </div>
+          <h2 class="text-xl font-extrabold text-slate-800 dark:text-white mb-1">Добро пожаловать в MiroSQL</h2>
+          <p class="text-sm text-slate-500 dark:text-slate-400">Представьтесь, чтобы другие участники видели вас на доске</p>
+        </div>
+
+        <!-- Form -->
+        <div class="space-y-4">
+          <!-- Name Input -->
+          <div>
+            <label for="welcome-name" class="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+              <span class="flex items-center gap-1.5">
+                <i data-lucide="user" class="w-3.5 h-3.5 text-indigo-500"></i>
+                Ваше имя
+              </span>
+            </label>
+            <input
+              id="welcome-name"
+              type="text"
+              maxlength="30"
+              placeholder="Например: Алексей"
+              class="w-full px-4 py-3 text-sm font-medium bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all placeholder:text-slate-400"
+            />
+          </div>
+
+          <!-- Role Selection -->
+          <div>
+            <label class="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider mb-2">
+              <span class="flex items-center gap-1.5">
+                <i data-lucide="shield" class="w-3.5 h-3.5 text-indigo-500"></i>
+                Ваша роль
+              </span>
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <!-- Teacher Card -->
+              <button id="welcome-role-teacher" class="welcome-role-card group" data-role="teacher">
+                <div class="welcome-role-icon bg-gradient-to-br from-indigo-500 to-indigo-700 group-hover:shadow-indigo-500/40">
+                  <span class="text-2xl">👨‍🏫</span>
+                </div>
+                <span class="text-sm font-bold text-slate-700 dark:text-slate-200">Преподаватель</span>
+                <span class="text-[10px] text-slate-400">Управление доской</span>
+              </button>
+              <!-- Student Card -->
+              <button id="welcome-role-student" class="welcome-role-card group" data-role="student">
+                <div class="welcome-role-icon bg-gradient-to-br from-emerald-500 to-emerald-700 group-hover:shadow-emerald-500/40">
+                  <span class="text-2xl">👩‍🎓</span>
+                </div>
+                <span class="text-sm font-bold text-slate-700 dark:text-slate-200">Ученик</span>
+                <span class="text-[10px] text-slate-400">Участие в уроке</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Submit Button -->
+        <button id="welcome-submit" disabled class="welcome-submit-btn mt-6 w-full py-3 px-6 text-sm font-bold text-white rounded-xl transition-all duration-200 flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none">
+          <i data-lucide="arrow-right" class="w-4 h-4"></i>
+          <span>Войти на доску</span>
+        </button>
+
+        <!-- Footer hint -->
+        <p class="text-center text-[10px] text-slate-400 mt-3">Данные сохраняются на этом устройстве навсегда</p>
+      </div>
+    </div>
+  </div>
+
   <!-- Infinite Canvas Container -->
   <div id="canvas-container" class="relative w-full h-full cursor-default overflow-hidden infinite-grid">
     <!-- SVG Drawing Layer for Freehand Brush/Eraser and ERD Connectors -->
@@ -359,9 +444,10 @@
       <!-- Dynamic Board Items are rendered here -->
     </div>
 
-    <!-- Collaboration Cursors and Spotlight Overlay Layer (Screen Space) -->
-    <div id="collab-overlay-layer" class="absolute inset-0 pointer-events-none z-30 overflow-hidden"></div>
   </div>
+
+  <!-- Collaboration Cursors and Spotlight Overlay Layer (Screen Space, Full Viewport) -->
+  <div id="collab-overlay-layer" class="fixed inset-0 pointer-events-none z-[45] overflow-hidden"></div>
 
   <!-- Floating Windows Container for Non-Modal Dialogs -->
   <div id="floating-windows-container" class="pointer-events-none fixed inset-0 z-50 overflow-hidden"></div>
@@ -373,14 +459,14 @@
   </div>
 
   <!-- Modular Scripts -->
-  <script src="js/db.js?v=4.4"></script>
-  <script src="js/canvas.js?v=4.4"></script>
-  <script src="js/tools.js?v=4.4"></script>
-  <script src="js/history.js?v=4.4"></script>
-  <script src="js/collab.js?v=4.4"></script>
-  <script src="js/windows.js?v=4.4"></script>
-  <script src="js/widgets.js?v=4.4"></script>
-  <script src="js/pages.js?v=4.4"></script>
-  <script src="js/app.js?v=4.4"></script>
+  <script src="js/db.js?v=5.0"></script>
+  <script src="js/canvas.js?v=5.0"></script>
+  <script src="js/tools.js?v=5.0"></script>
+  <script src="js/history.js?v=5.0"></script>
+  <script src="js/collab.js?v=5.0"></script>
+  <script src="js/windows.js?v=5.0"></script>
+  <script src="js/widgets.js?v=5.0"></script>
+  <script src="js/pages.js?v=5.0"></script>
+  <script src="js/app.js?v=5.0"></script>
 </body>
 </html>

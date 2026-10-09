@@ -1,46 +1,65 @@
 /**
  * =========================================================
- * MiroSQL Studio - Real-time Collaboration Engine
- * Dual-transport (BroadcastChannel + localStorage storage event)
- * Multi-tab Cursors, Laser Pointer (Spotlight), & Full Content Sync
+ * MiroSQL Studio - Real-time Collaboration Engine (v5.0)
+ * =========================================================
+ * MULTI-TRANSPORT REAL-TIME COLLABORATION:
+ *  1. Server-Sent Events (SSE) + HTTP POST to server.js
+ *     -> Works across different browsers, private tabs, and LAN devices!
+ *  2. LocalStorage Storage Events & Polling (60ms backup)
+ *     -> Instant zero-latency cross-tab communication in same browser
+ *  3. BroadcastChannel (mirosql_collab_v5)
+ *     -> Microsecond cross-tab IPC
  * =========================================================
  */
 
 const Collab = (() => {
-  // Unique ID for this tab instance
+  // Unique client instance ID per tab
   const myClientId = 'peer_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
 
+  // Storage keys
+  const IDENTITY_KEY = 'mirosql_user_identity_v1';
+  const SESSION_KEY = 'mirosql_session_identity_v1';
+  const CURSOR_PREFIX = 'mirosql_cursor_';
+  const SYNC_KEY = 'mirosql_collab_sync_v5';
+
+  // Palette
+  const USER_COLORS = [
+    '#6366f1', '#10b981', '#f43f5e', '#8b5cf6', '#0ea5e9',
+    '#f59e0b', '#ec4899', '#14b8a6', '#f97316', '#06b6d4'
+  ];
+
   let role = 'teacher';
-  let userName = 'Преподаватель (Алексей)';
+  let userName = '';
   let userColor = '#6366f1';
   let isFollowing = false;
+  let isReady = false;
 
   // Spotlight (laser pointer)
   let isSpotlightActive = false;
   let spotlightEl = null;
 
-  // Track last pointer coordinates
+  // Coordinates
   let lastClientX = window.innerWidth / 2;
   let lastClientY = window.innerHeight / 2;
   let lastWorldX = 0;
   let lastWorldY = 0;
 
-  // Remote peers: peerId -> { name, role, color, wx, wy, timestamp, el, spotEl, isIdle }
+  // Remote peers map: peerId -> { id, name, role, color, wx, wy, spotlight, ts, el, spotEl }
   const remotePeers = new Map();
 
-  // Dual transport
-  const CHANNEL_NAME = 'mirosql_collab_v4';
-  const STORAGE_KEY = 'mirosql_collab_sync_v4';
+  // BroadcastChannel
   let bc = null;
   try {
     if (typeof BroadcastChannel !== 'undefined') {
-      bc = new BroadcastChannel(CHANNEL_NAME);
+      bc = new BroadcastChannel('mirosql_collab_v5');
     }
-  } catch (e) {
-    console.warn('BroadcastChannel unavailable:', e);
-  }
+  } catch (e) {}
 
-  // Deduplication cache for dual transport
+  // SSE EventSource for server-assisted collaboration
+  let sseSource = null;
+  let isServerConnected = false;
+
+  // Message dedup
   const seenMessages = new Map();
   let msgSeq = 0;
 
@@ -48,7 +67,7 @@ const Collab = (() => {
     if (!msgId) return false;
     if (seenMessages.has(msgId)) return true;
     seenMessages.set(msgId, Date.now());
-    if (seenMessages.size > 250) {
+    if (seenMessages.size > 300) {
       const cutoff = Date.now() - 30000;
       for (const [id, time] of seenMessages.entries()) {
         if (time < cutoff) seenMessages.delete(id);
@@ -58,425 +77,489 @@ const Collab = (() => {
   }
 
   // ==========================================
-  // Transport Layer
+  // Identity Management (Permanent + Tab-scoped)
   // ==========================================
-  let lastStorageCursorTime = 0;
+  function loadIdentity() {
+    // 1. Check URL query params for quick testing (e.g. ?role=student&name=Мария)
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlRole = params.get('role');
+      const urlName = params.get('name');
+      if (urlRole || urlName) {
+        role = urlRole === 'student' ? 'student' : (urlRole === 'teacher' ? 'teacher' : 'student');
+        userName = urlName ? decodeURIComponent(urlName) : (role === 'teacher' ? 'Преподаватель' : 'Студент');
+        userColor = role === 'teacher' ? '#6366f1' : '#10b981';
+        saveIdentity(true);
+        return true;
+      }
+    } catch (e) {}
 
-  function broadcast(payload) {
+    // 2. Check tab session identity first
+    try {
+      const sessionRaw = sessionStorage.getItem(SESSION_KEY);
+      if (sessionRaw) {
+        const data = JSON.parse(sessionRaw);
+        if (data.name && data.role) {
+          userName = data.name;
+          role = data.role;
+          userColor = data.color || (role === 'teacher' ? '#6366f1' : '#10b981');
+          return true;
+        }
+      }
+    } catch (e) {}
+
+    // 3. Check permanent localStorage identity
+    try {
+      const localRaw = localStorage.getItem(IDENTITY_KEY);
+      if (localRaw) {
+        const data = JSON.parse(localRaw);
+        if (data.name && data.role) {
+          userName = data.name;
+          role = data.role;
+          userColor = data.color || (role === 'teacher' ? '#6366f1' : '#10b981');
+          // Copy to session
+          saveIdentity(false);
+          return true;
+        }
+      }
+    } catch (e) {}
+
+    return false;
+  }
+
+  function saveIdentity(permanent = true) {
+    const payload = JSON.stringify({
+      name: userName,
+      role: role,
+      color: userColor,
+      savedAt: Date.now()
+    });
+
+    try { sessionStorage.setItem(SESSION_KEY, payload); } catch (e) {}
+
+    if (permanent) {
+      try { localStorage.setItem(IDENTITY_KEY, payload); } catch (e) {}
+    }
+  }
+
+  // ==========================================
+  // Welcome / Onboarding Modal
+  // ==========================================
+  function showWelcomeModal(isEditMode = false) {
+    const modal = document.getElementById('welcome-modal');
+    if (!modal) {
+      userName = 'Пользователь';
+      role = 'teacher';
+      userColor = '#6366f1';
+      saveIdentity(true);
+      finishOnboarding();
+      return;
+    }
+
+    modal.classList.remove('hidden');
+    try { lucide.createIcons({ attrs: { class: '' }, nameAttr: 'data-lucide' }); } catch(e) {}
+
+    let selectedRole = role || null;
+    const nameInput = document.getElementById('welcome-name');
+    const submitBtn = document.getElementById('welcome-submit');
+    const teacherCard = document.getElementById('welcome-role-teacher');
+    const studentCard = document.getElementById('welcome-role-student');
+
+    if (userName && nameInput) {
+      nameInput.value = userName;
+    }
+
+    if (selectedRole === 'teacher' && teacherCard) {
+      teacherCard.classList.add('selected');
+      studentCard?.classList.remove('selected');
+    } else if (selectedRole === 'student' && studentCard) {
+      studentCard.classList.add('selected');
+      teacherCard?.classList.remove('selected');
+    }
+
+    function validateForm() {
+      const nameOk = nameInput && nameInput.value.trim().length >= 1;
+      const roleOk = !!selectedRole;
+      if (submitBtn) submitBtn.disabled = !(nameOk && roleOk);
+    }
+
+    validateForm();
+
+    if (nameInput) {
+      nameInput.oninput = validateForm;
+      setTimeout(() => nameInput.focus(), 300);
+    }
+
+    [teacherCard, studentCard].forEach(card => {
+      if (!card) return;
+      card.onclick = () => {
+        teacherCard?.classList.remove('selected');
+        studentCard?.classList.remove('selected');
+        card.classList.add('selected');
+        selectedRole = card.dataset.role;
+        validateForm();
+      };
+    });
+
+    if (submitBtn) {
+      submitBtn.onclick = () => {
+        if (submitBtn.disabled) return;
+        const name = nameInput?.value.trim();
+        if (!name || !selectedRole) return;
+
+        userName = name;
+        role = selectedRole;
+        userColor = selectedRole === 'teacher'
+          ? '#6366f1'
+          : USER_COLORS[1 + Math.floor(Math.random() * (USER_COLORS.length - 1))];
+
+        saveIdentity(true);
+
+        modal.style.transition = 'opacity 0.25s ease';
+        modal.style.opacity = '0';
+        setTimeout(() => {
+          modal.classList.add('hidden');
+          modal.style.opacity = '';
+          finishOnboarding();
+        }, 250);
+      };
+    }
+
+    if (nameInput) {
+      nameInput.onkeydown = (e) => {
+        if (e.key === 'Enter' && !submitBtn?.disabled) submitBtn?.click();
+      };
+    }
+  }
+
+  function finishOnboarding() {
+    isReady = true;
+    applyRoleToUI(true);
+    startCollaboration();
+  }
+
+  // ==========================================
+  // Transport 1: Server-Sent Events (SSE)
+  // ==========================================
+  function initServerConnection() {
+    try {
+      const sseUrl = `/api/collab/stream?id=${encodeURIComponent(myClientId)}`;
+      sseSource = new EventSource(sseUrl);
+
+      sseSource.onopen = () => {
+        isServerConnected = true;
+        console.log('[Collab] Connected to SSE server');
+      };
+
+      sseSource.onmessage = (e) => {
+        try {
+          const packet = JSON.parse(e.data);
+          handleIncomingPacket(packet);
+        } catch (err) {}
+      };
+
+      sseSource.onerror = () => {
+        isServerConnected = false;
+        // EventSource automatically attempts reconnection
+      };
+    } catch (e) {
+      console.warn('[Collab] SSE connection not available:', e);
+    }
+  }
+
+  function sendToServer(packet) {
+    if (!isReady) return;
+    try {
+      fetch('/api/collab/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(packet)
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
+  // ==========================================
+  // Unified Message Dispatch & Reception
+  // ==========================================
+  function broadcastMessage(packet) {
     msgSeq++;
-    const packet = {
-      ...payload,
+    const enriched = {
+      ...packet,
       _id: `${myClientId}_${msgSeq}_${Date.now()}`,
       _senderId: myClientId,
       _time: Date.now()
     };
 
-    // 1. Primary: BroadcastChannel (low latency)
+    // 1. Send to local BroadcastChannel
     if (bc) {
-      try { bc.postMessage(packet); } catch (e) { /* ignore */ }
+      try { bc.postMessage(enriched); } catch (e) {}
     }
 
-    // 2. Secondary: localStorage storage event (reliable fallback)
-    // Avoid storage spam for high frequency cursor updates, throttle to 100ms
-    if (packet.type !== 'cursor' || (Date.now() - lastStorageCursorTime > 100)) {
-      if (packet.type === 'cursor') lastStorageCursorTime = Date.now();
+    // 2. Send to localStorage sync key
+    if (packet.type !== 'cursor') {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(packet));
-      } catch (e) { /* ignore */ }
+        localStorage.setItem(SYNC_KEY, JSON.stringify(enriched));
+      } catch (e) {}
     }
+
+    // 3. Send to Server (cross-browser/LAN)
+    sendToServer(enriched);
   }
 
-  function onIncomingPacket(packet) {
+  function handleIncomingPacket(packet) {
     if (!packet || typeof packet !== 'object') return;
-    if (packet._senderId === myClientId) return;
+    const senderId = packet._senderId || packet.senderId || packet.id;
+    if (senderId === myClientId) return; // skip self
+
+    // Snapshots on SSE connect
+    if (packet.type === 'peers_snapshot' && Array.isArray(packet.peers)) {
+      const now = Date.now();
+      packet.peers.forEach(peer => {
+        if (peer.id && peer.id !== myClientId) {
+          renderPeerCursor(peer.id, peer, now);
+        }
+      });
+      updateOnlineIndicator();
+      return;
+    }
+
+    // Cursor movement packet
+    if (packet.type === 'cursor') {
+      renderPeerCursor(senderId, packet, Date.now());
+      updateOnlineIndicator();
+      return;
+    }
+
+    // Leave packet
+    if (packet.type === 'leave') {
+      removePeer(senderId);
+      updateOnlineIndicator();
+      return;
+    }
+
+    // Dedup non-cursor messages
     if (isDuplicate(packet._id)) return;
-    handleRemoteMessage(packet);
+
+    // Handle board sync commands
+    handleSyncMessage(packet);
   }
 
   // ==========================================
-  // Init
+  // Cursor Engine: Write, Poll & Storage Events
   // ==========================================
-  function init() {
-    // Determine initial role from sessionStorage (per tab)
-    const savedRole = sessionStorage.getItem('mirosql_tab_role');
-    if (savedRole) {
-      setRole(savedRole, false);
-    } else {
-      // Default to teacher, will auto-adjust to student if teacher responds to hello
-      setRole('teacher', false);
-    }
+  let lastWriteTime = 0;
+  let lastServerCursorSend = 0;
 
-    // Transport listeners
-    if (bc) {
-      bc.onmessage = (e) => onIncomingPacket(e.data);
-      bc.addEventListener('message', (e) => onIncomingPacket(e.data));
-    }
-    window.addEventListener('storage', (e) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
-        try {
-          const packet = JSON.parse(e.newValue);
-          onIncomingPacket(packet);
-        } catch (err) { /* ignore */ }
-      }
-    });
+  function writeMyCursor() {
+    if (!isReady) return;
+    const now = Date.now();
 
-    // Announce connection
-    broadcast({
-      type: 'hello',
-      senderId: myClientId,
-      role,
+    const cursorData = {
+      type: 'cursor',
+      id: myClientId,
       name: userName,
+      role: role,
       color: userColor,
-      hasExplicitRole: !!savedRole
-    });
-
-    if (window.Canvas) {
-      const initialWorld = Canvas.screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
-      lastWorldX = initialWorld.x;
-      lastWorldY = initialWorld.y;
-    }
-
-    // Pointer listeners
-    let lastBroadcastTime = 0;
-    const handleMove = (e) => {
-      lastClientX = e.clientX;
-      lastClientY = e.clientY;
-
-      // Update local spotlight synchronously (zero lag)
-      if (isSpotlightActive && spotlightEl) {
-        const pos = clientToOverlay(e.clientX, e.clientY);
-        spotlightEl.style.transform = `translate3d(${pos.x - 80}px, ${pos.y - 80}px, 0)`;
-      }
-
-      if (!window.Canvas) return;
-      const world = Canvas.screenToWorld(e.clientX, e.clientY);
-      lastWorldX = world.x;
-      lastWorldY = world.y;
-
-      // Throttled cursor broadcast (~30fps)
-      const now = Date.now();
-      if (now - lastBroadcastTime < 33) return;
-      lastBroadcastTime = now;
-
-      broadcast({
-        type: 'cursor',
-        senderId: myClientId,
-        name: userName,
-        role,
-        color: userColor,
-        wx: world.x,
-        wy: world.y,
-        spotlight: isSpotlightActive
-      });
+      wx: lastWorldX,
+      wy: lastWorldY,
+      spotlight: isSpotlightActive,
+      ts: now
     };
 
-    window.addEventListener('pointermove', handleMove, { passive: true });
-    window.addEventListener('mousemove', handleMove, { passive: true });
-    document.addEventListener('pointermove', handleMove, { passive: true });
-    document.addEventListener('mousemove', handleMove, { passive: true });
+    // 1. Write to tab's localStorage key
+    try {
+      localStorage.setItem(CURSOR_PREFIX + myClientId, JSON.stringify(cursorData));
+    } catch (e) {}
 
-    // Periodic heartbeat (every 2.5s) to keep cursor visible even if stationary
-    setInterval(() => {
-      broadcast({
-        type: 'heartbeat',
-        senderId: myClientId,
-        role,
-        name: userName,
-        color: userColor,
-        wx: lastWorldX,
-        wy: lastWorldY,
-        spotlight: isSpotlightActive
-      });
-      cleanupStalePeers();
-    }, 2500);
-
-    // Tab close notification
-    window.addEventListener('beforeunload', () => {
-      broadcast({ type: 'leave', senderId: myClientId });
-    });
-
-    // Keyboard shortcut L for spotlight
-    window.addEventListener('keydown', (e) => {
-      if (['TEXTAREA', 'INPUT', 'SELECT'].includes(e.target.tagName)) return;
-      if (e.key === 'l' || e.key === 'L') toggleSpotlight();
-    });
-  }
-
-  // ==========================================
-  // Role Management
-  // ==========================================
-  function setRole(newRole, notify = true) {
-    role = newRole;
-    sessionStorage.setItem('mirosql_tab_role', newRole);
-
-    if (role === 'teacher') {
-      userName = 'Преподаватель (Алексей)';
-      userColor = '#6366f1';
-    } else {
-      userName = 'Студент (Мария)';
-      userColor = '#10b981';
+    // 2. Broadcast via BroadcastChannel
+    if (bc) {
+      try {
+        bc.postMessage({ ...cursorData, _senderId: myClientId });
+      } catch (e) {}
     }
 
-    const badge = document.getElementById('role-badge');
-    const roleText = document.getElementById('role-text');
-    const followBtn = document.getElementById('btn-follow-mode');
+    // 3. Broadcast to Server (throttled to ~20fps to keep network light)
+    if (now - lastServerCursorSend > 45) {
+      lastServerCursorSend = now;
+      sendToServer(cursorData);
+    }
+  }
 
-    if (badge && roleText) {
-      if (role === 'teacher') {
-        badge.className = 'px-2.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5 cursor-pointer hover:shadow-sm transition select-none';
-        roleText.textContent = '👨‍🏫 Преподаватель';
-        if (followBtn) followBtn.classList.add('hidden');
-      } else {
-        badge.className = 'px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5 cursor-pointer hover:shadow-sm transition select-none';
-        roleText.textContent = '👩‍🎓 Ученик';
-        if (followBtn) followBtn.classList.remove('hidden');
+  /** Snapshot all cursor keys and poll localStorage */
+  function pollCursors() {
+    const now = Date.now();
+    const foundPeerIds = new Set();
+
+    // Snapshot keys first to avoid indexing issues during mutation
+    const keysToCheck = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(CURSOR_PREFIX)) {
+          keysToCheck.push(key);
+        }
       }
+    } catch (e) { return; }
+
+    for (const key of keysToCheck) {
+      const peerId = key.substring(CURSOR_PREFIX.length);
+      if (peerId === myClientId) continue;
+
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        if (!data || !data.ts) continue;
+
+        // Clean up stale cursors (> 12 seconds old)
+        if (now - data.ts > 12000) {
+          try { localStorage.removeItem(key); } catch (e) {}
+          continue;
+        }
+
+        foundPeerIds.add(peerId);
+        renderPeerCursor(peerId, data, now);
+      } catch (e) {}
     }
 
-    // Notify board widgets if needed
-    document.querySelectorAll('.board-item').forEach(el => {
-      if (el._onRoleChange) el._onRoleChange(role);
+    // Remove dead peers that haven't sent updates
+    remotePeers.forEach((peer, id) => {
+      if (!foundPeerIds.has(id) && (now - peer.timestamp > 12000)) {
+        removePeer(id);
+      }
     });
 
-    if (notify) {
-      broadcast({ type: 'role_change', senderId: myClientId, role, name: userName, color: userColor });
-      if (window.App) window.App.showToast(`Роль: ${role === 'teacher' ? '👨‍🏫 Преподаватель' : '👩‍🎓 Ученик'}`);
-    }
-  }
-
-  function toggleRole() {
-    setRole(role === 'teacher' ? 'student' : 'teacher', true);
+    updateOnlineIndicator();
   }
 
   // ==========================================
-  // Coordinate Helpers
+  // Visual Cursor Rendering
   // ==========================================
   function getOverlay() {
     let overlay = document.getElementById('collab-overlay-layer');
     if (!overlay) {
-      const container = document.getElementById('canvas-container');
-      if (container) {
-        overlay = document.createElement('div');
-        overlay.id = 'collab-overlay-layer';
-        overlay.className = 'absolute inset-0 pointer-events-none z-30 overflow-hidden';
-        container.appendChild(overlay);
-      }
+      overlay = document.createElement('div');
+      overlay.id = 'collab-overlay-layer';
+      overlay.className = 'fixed inset-0 pointer-events-none z-[45] overflow-hidden';
+      document.body.appendChild(overlay);
     }
     return overlay;
   }
 
-  function clientToOverlay(clientX, clientY) {
-    const container = document.getElementById('canvas-container');
-    if (!container) return { x: clientX, y: clientY };
-    const rect = container.getBoundingClientRect();
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }
-
-  function worldToOverlay(wx, wy) {
-    if (window.Canvas) {
-      const scale = Canvas.getScale();
-      const pan = Canvas.getPan();
-      return {
-        x: wx * scale + pan.x,
-        y: wy * scale + pan.y
-      };
+  function worldToScreenCoords(wx, wy) {
+    if (window.Canvas && typeof Canvas.worldToScreen === 'function') {
+      try {
+        return Canvas.worldToScreen(wx, wy);
+      } catch (e) {}
     }
     return { x: wx, y: wy };
   }
 
-  // ==========================================
-  // Remote Message Handling
-  // ==========================================
-  function handleRemoteMessage(msg) {
-    if (!msg) return;
-
-    // 1. Connection lifecycle
-    if (msg.type === 'hello') {
-      // Respond with our presence
-      broadcast({
-        type: 'welcome',
-        senderId: myClientId,
-        role,
-        name: userName,
-        color: userColor,
-        wx: lastWorldX,
-        wy: lastWorldY,
-        spotlight: isSpotlightActive
-      });
-
-      // If new tab doesn't have an explicit role and we are teacher, new tab should be student
-      if (!msg.hasExplicitRole && role === 'teacher') {
-        // Teacher is already here
-      }
-    }
-
-    if (msg.type === 'welcome') {
-      // If we don't have an explicit saved role, and existing peer is teacher, become student!
-      const hasSavedRole = !!sessionStorage.getItem('mirosql_tab_role');
-      if (!hasSavedRole && msg.role === 'teacher' && role === 'teacher') {
-        setRole('student', false);
-      }
-      upsertPeerCursor(msg);
-    }
-
-    if (msg.type === 'role_change') {
-      let peer = remotePeers.get(msg.senderId);
-      if (peer) {
-        peer.role = msg.role;
-        peer.name = msg.name;
-        peer.color = msg.color;
-        updatePeerUI(peer);
-      }
-    }
-
-    if (msg.type === 'cursor' || msg.type === 'heartbeat') {
-      upsertPeerCursor(msg);
-    }
-
-    if (msg.type === 'leave') {
-      removePeer(msg.senderId);
-    }
-
-    // 2. Viewport follow mode
-    if (msg.type === 'viewport' && isFollowing && msg.role === 'teacher') {
-      if (window.Canvas) {
-        Canvas.setScale(msg.scale);
-        Canvas.setPan(msg.panX, msg.panY);
-      }
-    }
-
-    // 3. Real-time Text updates
-    if (msg.type === 'item_text') {
-      if (window.Widgets && Widgets.updateRemoteItemText) {
-        Widgets.updateRemoteItemText(msg.id, msg.field, msg.value);
-      }
-    }
-
-    // 4. Real-time Item Move / Resize
-    if (msg.type === 'item_move') {
-      if (window.Widgets && Widgets.updateRemoteItemPos) {
-        Widgets.updateRemoteItemPos(msg.id, msg.x, msg.y, msg.width, msg.height);
-      }
-    }
-
-    // 5. Item Creation
-    if (msg.type === 'item_create') {
-      if (window.Widgets && Widgets.mountRemoteItem) {
-        Widgets.mountRemoteItem(msg.item);
-      }
-    }
-
-    // 6. Item Deletion
-    if (msg.type === 'item_delete') {
-      if (window.Widgets && Widgets.deleteRemoteItem) {
-        Widgets.deleteRemoteItem(msg.id);
-      }
-    }
-
-    // 7. Item Lock
-    if (msg.type === 'item_lock') {
-      if (window.Widgets && Widgets.lockRemoteItem) {
-        Widgets.lockRemoteItem(msg.id, msg.isLocked);
-      }
-    }
-
-    // 8. Item Data Update (e.g. quiz selection, checklist toggle)
-    if (msg.type === 'item_update') {
-      if (window.Widgets && Widgets.updateRemoteItemData) {
-        Widgets.updateRemoteItemData(msg.id, msg.data);
-      }
-    }
-
-    // 9. Page Sync
-    if (msg.type === 'pages_sync') {
-      if (window.Pages && Pages.onRemotePagesUpdate) {
-        Pages.onRemotePagesUpdate(msg.pages, msg.activePageId);
-      }
-    }
-
-    // 10. Database Sync
-    if (msg.type === 'db_sync') {
-      if (window.DB && DB.onRemoteDbUpdate) {
-        DB.onRemoteDbUpdate(msg.tables, msg.tableSchemas);
-      }
-    }
-
-    // 11. Freehand Drawing Stroke Sync
-    if (msg.type === 'stroke_add') {
-      if (window.Canvas && Canvas.addRemoteStroke) {
-        Canvas.addRemoteStroke(msg.stroke);
-      }
-    }
-  }
-
-  // ==========================================
-  // Peer Cursor Rendering
-  // ==========================================
-  function upsertPeerCursor(msg) {
+  function renderPeerCursor(peerId, data, now) {
     const overlay = getOverlay();
     if (!overlay) return;
 
-    let peer = remotePeers.get(msg.senderId);
+    let peer = remotePeers.get(peerId);
 
     if (!peer) {
-      // Create cursor element
+      // Create new cursor DOM element
       const el = document.createElement('div');
-      el.className = 'remote-peer-cursor absolute left-0 top-0 pointer-events-none select-none';
-      el.style.zIndex = '999980';
-      el.style.willChange = 'transform, opacity';
-      el.style.transition = 'transform 60ms linear, opacity 300ms ease';
-
+      el.id = 'cursor-' + peerId;
+      el.style.cssText = `
+        position: absolute;
+        left: 0; top: 0;
+        z-index: 999980;
+        pointer-events: none;
+        user-select: none;
+        will-change: transform;
+        transition: transform 70ms linear, opacity 300ms ease;
+      `;
       overlay.appendChild(el);
+
       peer = {
-        id: msg.senderId,
-        el,
+        id: peerId,
+        el: el,
         spotEl: null,
-        name: msg.name,
-        role: msg.role,
-        color: msg.color,
-        wx: msg.wx || 0,
-        wy: msg.wy || 0,
-        timestamp: Date.now()
+        name: data.name || 'Участник',
+        role: data.role || 'student',
+        color: data.color || '#10b981',
+        wx: data.wx !== undefined ? data.wx : 0,
+        wy: data.wy !== undefined ? data.wy : 0,
+        timestamp: now
       };
-      remotePeers.set(msg.senderId, peer);
-      updatePeerUI(peer);
+      remotePeers.set(peerId, peer);
+      rebuildCursorHTML(peer);
     }
 
-    // Update position and activity
-    peer.wx = msg.wx !== undefined ? msg.wx : peer.wx;
-    peer.wy = msg.wy !== undefined ? msg.wy : peer.wy;
-    peer.timestamp = Date.now();
-    peer.el.style.opacity = '1';
+    // Update peer metadata
+    const nameChanged = peer.name !== data.name;
+    const colorChanged = peer.color !== data.color;
+    const roleChanged = peer.role !== data.role;
 
-    // Position cursor in overlay
-    const pos = worldToOverlay(peer.wx, peer.wy);
-    peer.el.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`;
+    peer.name = data.name || peer.name;
+    peer.role = data.role || peer.role;
+    peer.color = data.color || peer.color;
+    peer.wx = data.wx !== undefined ? data.wx : peer.wx;
+    peer.wy = data.wy !== undefined ? data.wy : peer.wy;
+    peer.timestamp = now;
 
-    // Remote Spotlight (Laser pointer)
-    if (msg.spotlight) {
+    if (nameChanged || colorChanged || roleChanged) {
+      rebuildCursorHTML(peer);
+    }
+
+    // Position cursor in client viewport coordinates
+    const screenPos = worldToScreenCoords(peer.wx, peer.wy);
+    // Offset slightly so pointer tip (top-left) aligns with exact mouse coordinate
+    peer.el.style.transform = `translate3d(${screenPos.x - 3}px, ${screenPos.y - 3}px, 0)`;
+
+    // Fade if stationary/inactive for > 6 seconds
+    const elapsed = now - (data.ts || now);
+    peer.el.style.opacity = elapsed > 6000 ? '0.65' : '1';
+
+    // Spotlight / Laser pointer handling
+    if (data.spotlight) {
       if (!peer.spotEl) {
-        peer.spotEl = createSpotlightEl(msg.name);
-        peer.spotEl.style.transition = 'transform 60ms linear';
+        peer.spotEl = createSpotlightEl(peer.name);
+        peer.spotEl.style.transition = 'transform 70ms linear';
         overlay.appendChild(peer.spotEl);
       }
-      peer.spotEl.style.transform = `translate3d(${pos.x - 80}px, ${pos.y - 80}px, 0)`;
+      peer.spotEl.style.transform = `translate3d(${screenPos.x - 80}px, ${screenPos.y - 80}px, 0)`;
     } else if (peer.spotEl) {
       peer.spotEl.remove();
       peer.spotEl = null;
     }
   }
 
-  function updatePeerUI(peer) {
+  function rebuildCursorHTML(peer) {
     if (!peer || !peer.el) return;
     const icon = peer.role === 'teacher' ? '👨‍🏫' : '👩‍🎓';
+    const name = peer.name || 'Участник';
+    const color = peer.color || '#6366f1';
+
     peer.el.innerHTML = `
-      <div class="flex items-start">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" class="drop-shadow-md">
-          <path d="M5.65 2.5L20.35 12.2L12.5 13.8L9.2 21.5L5.65 2.5Z" fill="${peer.color}" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
+      <div style="display:flex;align-items:flex-start;filter:drop-shadow(0 3px 10px rgba(0,0,0,0.35));">
+        <!-- SVG Cursor Pointer -->
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style="transform:rotate(-4deg);filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));">
+          <path d="M5.65 2.5L20.35 12.2L12.5 13.8L9.2 21.5L5.65 2.5Z" fill="${color}" stroke="#ffffff" stroke-width="2.2" stroke-linejoin="round"/>
         </svg>
-        <div class="ml-1 mt-3 px-2 py-0.5 rounded-full text-white text-[10px] font-bold shadow-lg whitespace-nowrap flex items-center gap-1 border border-white/20" style="background:${peer.color}">
-          <span>${icon}</span>
-          <span>${peer.name}</span>
+        <!-- Name & Role Tag -->
+        <div style="
+          margin-left:-2px; margin-top:14px;
+          padding:3px 10px;
+          border-radius:999px;
+          color:#ffffff;
+          font-size:11px; font-weight:800;
+          font-family:'Inter',system-ui,sans-serif;
+          white-space:nowrap;
+          display:flex; align-items:center; gap:4px;
+          background:${color};
+          border:2px solid rgba(255,255,255,0.7);
+          box-shadow:0 4px 14px -2px rgba(0,0,0,0.4), 0 0 0 1px ${color}60;
+          backdrop-filter:blur(6px);
+          letter-spacing:0.02em;
+        ">
+          <span style="font-size:13px;line-height:1;">${icon}</span>
+          <span>${name}</span>
         </div>
       </div>
     `;
@@ -488,41 +571,160 @@ const Collab = (() => {
       if (peer.el) peer.el.remove();
       if (peer.spotEl) peer.spotEl.remove();
       remotePeers.delete(peerId);
+      console.log('[Collab] Peer removed:', peerId);
     }
   }
 
-  function cleanupStalePeers() {
+  function updateOnlineIndicator() {
+    const indicator = document.getElementById('collab-online-indicator');
+    const textEl = document.getElementById('collab-online-text');
+    if (!indicator || !textEl) return;
+
+    const totalCount = 1 + remotePeers.size;
+    indicator.classList.remove('hidden');
+    indicator.classList.add('flex');
+
+    if (remotePeers.size === 0) {
+      textEl.textContent = '1 онлайн';
+    } else {
+      const peerNames = Array.from(remotePeers.values()).map(p => p.name).slice(0, 2);
+      const othersText = remotePeers.size > 2 ? ` +${remotePeers.size - 2}` : '';
+      textEl.textContent = `${totalCount} онлайн (${peerNames.join(', ')}${othersText})`;
+    }
+  }
+
+  // ==========================================
+  // Collaboration Start & Pointer Handlers
+  // ==========================================
+  function startCollaboration() {
+    if (window.Canvas && typeof Canvas.screenToWorld === 'function') {
+      const initialWorld = Canvas.screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+      lastWorldX = initialWorld.x;
+      lastWorldY = initialWorld.y;
+    }
+
+    // Pointer move handler
+    const handleMove = (e) => {
+      lastClientX = e.clientX;
+      lastClientY = e.clientY;
+
+      if (isSpotlightActive && spotlightEl) {
+        spotlightEl.style.transform = `translate3d(${e.clientX - 80}px, ${e.clientY - 80}px, 0)`;
+      }
+
+      if (window.Canvas && typeof Canvas.screenToWorld === 'function') {
+        const world = Canvas.screenToWorld(e.clientX, e.clientY);
+        lastWorldX = world.x;
+        lastWorldY = world.y;
+      }
+
+      // Throttled cursor write (~30fps)
+      const now = Date.now();
+      if (now - lastWriteTime < 32) return;
+      lastWriteTime = now;
+      writeMyCursor();
+    };
+
+    window.addEventListener('pointermove', handleMove, { passive: true });
+    document.addEventListener('pointermove', handleMove, { passive: true });
+
+    // Initial write
+    writeMyCursor();
+
+    // Heartbeat every 1.2 seconds to maintain active state
+    setInterval(writeMyCursor, 1200);
+
+    // Continuous polling every 60ms
+    setInterval(pollCursors, 60);
+
+    // Initial server connection
+    initServerConnection();
+
+    // Onunload: clean up cursor key and inform peers
+    window.addEventListener('beforeunload', () => {
+      try { localStorage.removeItem(CURSOR_PREFIX + myClientId); } catch (e) {}
+      broadcastMessage({ type: 'leave', senderId: myClientId });
+    });
+
+    // Spotlight shortcut (L)
+    window.addEventListener('keydown', (e) => {
+      if (['TEXTAREA', 'INPUT', 'SELECT'].includes(e.target.tagName)) return;
+      if (e.key === 'l' || e.key === 'L') toggleSpotlight();
+    });
+
+    updateOnlineIndicator();
+    console.log('[Collab v5.0] Started | My ID:', myClientId, '| Name:', userName, '| Role:', role);
+  }
+
+  // ==========================================
+  // UI & Role Presentation
+  // ==========================================
+  function applyRoleToUI(notify = true) {
+    const badge = document.getElementById('role-badge');
+    const roleText = document.getElementById('role-text');
+    const followBtn = document.getElementById('btn-follow-mode');
+
+    if (badge && roleText) {
+      if (role === 'teacher') {
+        badge.className = 'px-2.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5 cursor-pointer hover:shadow-sm transition select-none';
+        roleText.textContent = `👨‍🏫 ${userName || 'Преподаватель'}`;
+        if (followBtn) followBtn.classList.add('hidden');
+      } else {
+        badge.className = 'px-2.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5 cursor-pointer hover:shadow-sm transition select-none';
+        roleText.textContent = `👩‍🎓 ${userName || 'Ученик'}`;
+        if (followBtn) followBtn.classList.remove('hidden');
+      }
+    }
+
+    document.querySelectorAll('.board-item').forEach(el => {
+      if (el._onRoleChange) el._onRoleChange(role);
+    });
+
+    if (notify && isReady) {
+      broadcastMessage({ type: 'role_change', senderId: myClientId, role, name: userName, color: userColor });
+      if (window.App) window.App.showToast(`Роль: ${role === 'teacher' ? '👨‍🏫 Преподаватель' : '👩‍🎓 Ученик'} (${userName})`);
+    }
+  }
+
+  function setRole(newRole, notify = true) {
+    role = newRole;
+    userColor = role === 'teacher' ? '#6366f1' : '#10b981';
+    saveIdentity(true);
+    applyRoleToUI(notify);
+    writeMyCursor();
+  }
+
+  function toggleRole() {
+    setRole(role === 'teacher' ? 'student' : 'teacher', true);
+  }
+
+  function editProfile() {
+    showWelcomeModal(true);
+  }
+
+  // ==========================================
+  // Canvas Transform Hook (Pan/Zoom)
+  // ==========================================
+  function onCanvasTransform() {
     const now = Date.now();
-    remotePeers.forEach((peer, id) => {
-      const elapsed = now - peer.timestamp;
-      if (elapsed > 90000) {
-        // Disconnected
-        removePeer(id);
-      } else if (elapsed > 12000) {
-        // Idle - fade slightly
-        if (peer.el) peer.el.style.opacity = '0.4';
+    remotePeers.forEach((peer) => {
+      if (peer.el) {
+        const screenPos = worldToScreenCoords(peer.wx, peer.wy);
+        peer.el.style.transform = `translate3d(${screenPos.x - 3}px, ${screenPos.y - 3}px, 0)`;
+        if (peer.spotEl) {
+          peer.spotEl.style.transform = `translate3d(${screenPos.x - 80}px, ${screenPos.y - 80}px, 0)`;
+        }
       }
     });
   }
 
   // ==========================================
-  // Canvas Transform Hook
-  // ==========================================
-  function onCanvasTransform() {
-    remotePeers.forEach((peer) => {
-      const pos = worldToOverlay(peer.wx, peer.wy);
-      if (peer.el) peer.el.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`;
-      if (peer.spotEl) peer.spotEl.style.transform = `translate3d(${pos.x - 80}px, ${pos.y - 80}px, 0)`;
-    });
-  }
-
-  // ==========================================
-  // Local Spotlight (Zero-lag Laser Pointer)
+  // Spotlight / Laser Pointer (L)
   // ==========================================
   function toggleSpotlight() {
     isSpotlightActive = !isSpotlightActive;
-
     const btn = document.getElementById('btn-spotlight-toggle');
+
     if (btn) {
       if (isSpotlightActive) {
         btn.classList.add('bg-amber-500', 'text-white', 'shadow-md', 'border-amber-600');
@@ -535,49 +737,35 @@ const Collab = (() => {
       }
     }
 
+    const overlay = getOverlay();
     if (isSpotlightActive) {
-      const overlay = getOverlay();
       if (overlay && !spotlightEl) {
         spotlightEl = createSpotlightEl(userName);
         overlay.appendChild(spotlightEl);
       }
       if (spotlightEl) {
-        const pos = clientToOverlay(lastClientX, lastClientY);
-        spotlightEl.style.transform = `translate3d(${pos.x - 80}px, ${pos.y - 80}px, 0)`;
+        spotlightEl.style.transform = `translate3d(${lastClientX - 80}px, ${lastClientY - 80}px, 0)`;
       }
-    } else {
-      if (spotlightEl) {
-        spotlightEl.remove();
-        spotlightEl = null;
-      }
+    } else if (spotlightEl) {
+      spotlightEl.remove();
+      spotlightEl = null;
     }
 
-    // Broadcast spotlight status change
-    broadcast({
-      type: 'cursor',
-      senderId: myClientId,
-      name: userName,
-      role,
-      color: userColor,
-      wx: lastWorldX,
-      wy: lastWorldY,
-      spotlight: isSpotlightActive
-    });
+    writeMyCursor();
   }
 
   function createSpotlightEl(ownerName) {
     const el = document.createElement('div');
-    el.className = 'absolute pointer-events-none select-none';
-    el.style.cssText = 'z-index:999999;width:160px;height:160px;left:0;top:0;will-change:transform;';
+    el.style.cssText = 'position:fixed;z-index:999999;width:160px;height:160px;left:0;top:0;will-change:transform;pointer-events:none;';
     el.innerHTML = `
-      <div class="relative w-full h-full flex items-center justify-center">
-        <div class="absolute inset-0 rounded-full border-2 border-dashed border-amber-400/90 bg-amber-400/20 shadow-[0_0_35px_rgba(251,191,36,0.6)] animate-pulse"></div>
-        <div class="absolute w-14 h-14 rounded-full border border-rose-400/60"></div>
-        <div class="w-4 h-4 rounded-full bg-rose-600 border-2 border-white shadow-[0_0_12px_#f43f5e,0_0_25px_#ef4444] relative z-20 flex items-center justify-center">
-          <div class="w-1.5 h-1.5 rounded-full bg-white"></div>
+      <div style="position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;">
+        <div style="position:absolute;inset:0;border-radius:50%;border:2px dashed rgba(251,191,36,0.9);background:rgba(251,191,36,0.15);box-shadow:0 0 35px rgba(251,191,36,0.6);animation:pulse 2s infinite;"></div>
+        <div style="position:absolute;width:56px;height:56px;border-radius:50%;border:1px solid rgba(244,63,94,0.6);"></div>
+        <div style="width:16px;height:16px;border-radius:50%;background:#dc2626;border:2px solid #fff;box-shadow:0 0 12px #f43f5e,0 0 25px #ef4444;position:relative;z-index:20;display:flex;align-items:center;justify-content:center;">
+          <div style="width:6px;height:6px;border-radius:50%;background:#fff;"></div>
         </div>
-        <div class="absolute -bottom-6 bg-slate-900/95 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg border border-slate-700 whitespace-nowrap flex items-center gap-1.5 z-30">
-          <span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+        <div style="position:absolute;bottom:-24px;background:rgba(15,23,42,0.95);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;box-shadow:0 4px 12px rgba(0,0,0,0.3);border:1px solid rgba(71,85,105,0.5);white-space:nowrap;display:flex;align-items:center;gap:6px;z-index:30;">
+          <span style="width:8px;height:8px;border-radius:50%;background:#ef4444;animation:ping 1s infinite;display:inline-block;"></span>
           <span>${ownerName}</span>
         </div>
       </div>
@@ -590,7 +778,7 @@ const Collab = (() => {
   // ==========================================
   function broadcastViewport(scale, panX, panY) {
     if (role === 'teacher') {
-      broadcast({ type: 'viewport', senderId: myClientId, role: 'teacher', scale, panX, panY });
+      broadcastMessage({ type: 'viewport', senderId: myClientId, role: 'teacher', scale, panX, panY });
     }
   }
 
@@ -611,42 +799,127 @@ const Collab = (() => {
   }
 
   // ==========================================
-  // Public Broadcasting Helpers for Content Sync
+  // Sync Message Handler
   // ==========================================
-  function broadcastItemText(id, field, value) {
-    broadcast({ type: 'item_text', id, field, value });
+  function handleSyncMessage(msg) {
+    if (!msg) return;
+
+    if (msg.type === 'viewport' && isFollowing && msg.role === 'teacher') {
+      if (window.Canvas) {
+        Canvas.setScale(msg.scale);
+        Canvas.setPan(msg.panX, msg.panY);
+      }
+    }
+
+    if (msg.type === 'item_text') {
+      if (window.Widgets && Widgets.updateRemoteItemText) {
+        Widgets.updateRemoteItemText(msg.id, msg.field, msg.value);
+      }
+    }
+
+    if (msg.type === 'item_move') {
+      if (window.Widgets && Widgets.updateRemoteItemPos) {
+        Widgets.updateRemoteItemPos(msg.id, msg.x, msg.y, msg.width, msg.height);
+      }
+    }
+
+    if (msg.type === 'item_create') {
+      if (window.Widgets && Widgets.mountRemoteItem) {
+        Widgets.mountRemoteItem(msg.item);
+      }
+    }
+
+    if (msg.type === 'item_delete') {
+      if (window.Widgets && Widgets.deleteRemoteItem) {
+        Widgets.deleteRemoteItem(msg.id);
+      }
+    }
+
+    if (msg.type === 'item_lock') {
+      if (window.Widgets && Widgets.lockRemoteItem) {
+        Widgets.lockRemoteItem(msg.id, msg.isLocked);
+      }
+    }
+
+    if (msg.type === 'item_update') {
+      if (window.Widgets && Widgets.updateRemoteItemData) {
+        Widgets.updateRemoteItemData(msg.id, msg.data);
+      }
+    }
+
+    if (msg.type === 'pages_sync') {
+      if (window.Pages && Pages.onRemotePagesUpdate) {
+        Pages.onRemotePagesUpdate(msg.pages, msg.activePageId);
+      }
+    }
+
+    if (msg.type === 'db_sync') {
+      if (window.DB && DB.onRemoteDbUpdate) {
+        DB.onRemoteDbUpdate(msg.tables, msg.tableSchemas);
+      }
+    }
+
+    if (msg.type === 'stroke_add') {
+      if (window.Canvas && Canvas.addRemoteStroke) {
+        Canvas.addRemoteStroke(msg.stroke);
+      }
+    }
   }
 
-  function broadcastItemMove(id, x, y, width, height) {
-    broadcast({ type: 'item_move', id, x, y, width, height });
-  }
+  // ==========================================
+  // Public Broadcasting Helpers
+  // ==========================================
+  function broadcastItemText(id, field, value) { broadcastMessage({ type: 'item_text', id, field, value }); }
+  function broadcastItemMove(id, x, y, width, height) { broadcastMessage({ type: 'item_move', id, x, y, width, height }); }
+  function broadcastItemCreate(item) { broadcastMessage({ type: 'item_create', item }); }
+  function broadcastItemDelete(id) { broadcastMessage({ type: 'item_delete', id }); }
+  function broadcastItemLock(id, isLocked) { broadcastMessage({ type: 'item_lock', id, isLocked }); }
+  function broadcastItemUpdate(id, data) { broadcastMessage({ type: 'item_update', id, data }); }
+  function broadcastPagesUpdate(pages, activePageId) { broadcastMessage({ type: 'pages_sync', pages, activePageId }); }
+  function broadcastDbUpdate(tables, tableSchemas) { broadcastMessage({ type: 'db_sync', tables, tableSchemas }); }
+  function broadcastStroke(stroke) { broadcastMessage({ type: 'stroke_add', stroke }); }
 
-  function broadcastItemCreate(item) {
-    broadcast({ type: 'item_create', item });
-  }
+  // ==========================================
+  // Init
+  // ==========================================
+  function init() {
+    // 1. BroadcastChannel listener
+    if (bc) {
+      bc.onmessage = (e) => handleIncomingPacket(e.data);
+    }
 
-  function broadcastItemDelete(id) {
-    broadcast({ type: 'item_delete', id });
-  }
+    // 2. Window storage event listener (instant cross-tab cursor & sync)
+    window.addEventListener('storage', (e) => {
+      if (!e.newValue) return;
+      if (e.key && e.key.startsWith(CURSOR_PREFIX)) {
+        try {
+          const peerId = e.key.substring(CURSOR_PREFIX.length);
+          if (peerId !== myClientId) {
+            renderPeerCursor(peerId, JSON.parse(e.newValue), Date.now());
+          }
+        } catch (err) {}
+      } else if (e.key === SYNC_KEY) {
+        try {
+          handleIncomingPacket(JSON.parse(e.newValue));
+        } catch (err) {}
+      }
+    });
 
-  function broadcastItemLock(id, isLocked) {
-    broadcast({ type: 'item_lock', id, isLocked });
-  }
+    // 3. Double-click on role badge opens name/role editor
+    const roleBadge = document.getElementById('role-badge');
+    if (roleBadge) {
+      roleBadge.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        editProfile();
+      });
+    }
 
-  function broadcastItemUpdate(id, data) {
-    broadcast({ type: 'item_update', id, data });
-  }
-
-  function broadcastPagesUpdate(pages, activePageId) {
-    broadcast({ type: 'pages_sync', pages, activePageId });
-  }
-
-  function broadcastDbUpdate(tables, tableSchemas) {
-    broadcast({ type: 'db_sync', tables, tableSchemas });
-  }
-
-  function broadcastStroke(stroke) {
-    broadcast({ type: 'stroke_add', stroke });
+    // 4. Load identity or display onboarding modal
+    if (loadIdentity()) {
+      finishOnboarding();
+    } else {
+      showWelcomeModal();
+    }
   }
 
   return {
@@ -654,12 +927,12 @@ const Collab = (() => {
     getRole: () => role,
     setRole,
     toggleRole,
+    editProfile,
     broadcastViewport,
     toggleFollowMode,
     toggleSpotlight,
     isFollowing: () => isFollowing,
     onCanvasTransform,
-    // Content sync broadcasters
     broadcastItemText,
     broadcastItemMove,
     broadcastItemCreate,
@@ -670,6 +943,8 @@ const Collab = (() => {
     broadcastDbUpdate,
     broadcastStroke,
     getClientId: () => myClientId,
-    getPeers: () => Array.from(remotePeers.values())
+    getPeers: () => Array.from(remotePeers.values()),
+    getUserName: () => userName,
+    getUserColor: () => userColor
   };
 })();

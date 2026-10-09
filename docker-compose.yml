@@ -1,0 +1,7 @@
+services:
+  lesson-board:
+    build: .
+    container_name: lesson-board
+    ports:
+      - "8080:80"
+    restart: unless-stopped
