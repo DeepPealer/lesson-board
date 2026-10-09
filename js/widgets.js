@@ -796,7 +796,7 @@ const Widgets = (() => {
       correctIdx: typeof correctIdx === 'number' ? correctIdx : 1,
       explanation,
       isLocked,
-      selectedIndex: existingSelectedIndex !== undefined ? existingSelectedIndex : null,
+      selectedIndex: null, // Answers belong to individual participants, not the shared board.
       isEditing: false
     };
 
@@ -879,6 +879,28 @@ const Widgets = (() => {
     const btnResetAns = el.querySelector('.btn-reset-quiz-ans');
     const btnToggleEdit = el.querySelector('.btn-toggle-quiz-edit');
 
+    // Every participant can answer and retry independently. A shared answer
+    // would lock the question for every student in the room.
+    const quizAnswerKey = 'mirosql_quiz_answer_v2_' +
+      (new URLSearchParams(window.location.search).get('room') || 'default') + '_' + id;
+    const quizSignature = () => JSON.stringify([
+      itemData.question, itemData.options, itemData.correctIdx, itemData.explanation
+    ]);
+    let localSelectedIndex = null;
+    try {
+      const previous = JSON.parse(sessionStorage.getItem(quizAnswerKey) || 'null');
+      if (previous && previous.signature === quizSignature() &&
+          Number.isInteger(previous.index) && previous.index >= 0 &&
+          previous.index < itemData.options.length) {
+        localSelectedIndex = previous.index;
+      }
+    } catch (error) {}
+
+    function resetLocalQuizAnswer() {
+      localSelectedIndex = null;
+      try { sessionStorage.removeItem(quizAnswerKey); } catch (error) {}
+    }
+
     // Render options in solve mode
     function renderSolveOptions() {
       optionsContainer.innerHTML = '';
@@ -906,8 +928,8 @@ const Widgets = (() => {
         optionsContainer.appendChild(btn);
       });
 
-      if (itemData.selectedIndex !== null) {
-        applyAnswer(itemData.selectedIndex, false);
+      if (localSelectedIndex !== null && localSelectedIndex < itemData.options.length) {
+        applyAnswer(localSelectedIndex, false);
       } else {
         explBox.classList.add('hidden');
         btnResetAns.classList.add('hidden');
@@ -915,7 +937,8 @@ const Widgets = (() => {
     }
 
     function applyAnswer(idx, triggerConfetti = true) {
-      itemData.selectedIndex = idx;
+      localSelectedIndex = idx;
+      try { sessionStorage.setItem(quizAnswerKey, JSON.stringify({ index: idx, signature: quizSignature() })); } catch (error) {}
       const isCorrect = idx === itemData.correctIdx;
       btnResetAns.classList.remove('hidden');
 
@@ -941,21 +964,19 @@ const Widgets = (() => {
         explBox.className = 'quiz-explanation mt-2 p-2.5 rounded-xl text-[11px] bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300';
         explBox.innerHTML = `<strong>Не совсем так.</strong> ${itemData.explanation}`;
       }
-      saveBoard();
-      if (window.Collab) Collab.broadcastItemUpdate(id, { selectedIndex: itemData.selectedIndex });
     }
 
     btnResetAns.addEventListener('pointerdown', e => e.stopPropagation());
     btnResetAns.addEventListener('click', (e) => {
       e.stopPropagation();
-      itemData.selectedIndex = null;
+      resetLocalQuizAnswer();
       renderSolveOptions();
-      saveBoard();
-      if (window.Collab) Collab.broadcastItemUpdate(id, { selectedIndex: null });
     });
 
     el._rerenderWidget = (updatedData) => {
+      const previousSignature = quizSignature();
       if (updatedData) Object.assign(itemData, updatedData);
+      if (quizSignature() !== previousSignature) resetLocalQuizAnswer();
       renderSolveOptions();
     };
 
@@ -1037,7 +1058,6 @@ const Widgets = (() => {
         editView.classList.add('hidden');
         solveView.classList.remove('hidden');
         btnToggleEdit.classList.remove('text-indigo-600', 'bg-indigo-50', 'dark:bg-indigo-950/60');
-        itemData.selectedIndex = null;
         renderSolveOptions();
         saveBoard();
       }
@@ -1053,6 +1073,15 @@ const Widgets = (() => {
     btnSaveEdit.addEventListener('click', (e) => {
       e.stopPropagation();
       toggleEditMode(false);
+      resetLocalQuizAnswer();
+      renderSolveOptions();
+      if (window.Collab) Collab.broadcastItemUpdate(id, {
+        question: itemData.question,
+        options: itemData.options,
+        correctIdx: itemData.correctIdx,
+        explanation: itemData.explanation,
+        selectedIndex: null
+      });
       if (window.App) window.App.showToast('Квиз сохранен');
     });
 
@@ -2042,7 +2071,7 @@ const Widgets = (() => {
   // ==========================================
   // 7. General SQL Scratchpad Widget
   // ==========================================
-  function createSqlWidget(x, y, title = "SQL Скретчпад", query = null, width = 560, height = 480, existingId = null, isLocked = false, fromRemote = false) {
+  function createSqlWidget(x, y, title = "SQL Скретчпад", query = null, width = 560, height = 480, existingId = null, isLocked = false, fromRemote = false, existingExecution = null) {
     const id = existingId || 'sql_' + Date.now();
     const initialQuery = query || "SELECT * FROM students;";
 
@@ -2055,6 +2084,7 @@ const Widgets = (() => {
       height,
       title,
       query: initialQuery,
+      execution: existingExecution || null,
       isLocked
     };
 
@@ -2163,74 +2193,112 @@ const Widgets = (() => {
     const rowCountEl = el.querySelector('.sql-row-count');
     const execTimeEl = el.querySelector('.sql-exec-time');
 
+    // The execution result is part of the shared widget state, not only its DOM.
+    // Remote clients render this snapshot; they must never execute DML again.
+    const MAX_SHARED_SQL_ROWS = 500;
     let lastResultRows = [];
+
+    function renderExecution() {
+      const result = itemData.execution;
+      const thead = el.querySelector('.table-header-row');
+      const tbody = el.querySelector('.table-body');
+      tableEl.classList.add('hidden');
+      mutationCard.classList.add('hidden');
+      errorBox.classList.add('hidden');
+      placeholderEl.classList.toggle('hidden', !!result);
+      execTimeEl.classList.add('hidden');
+      thead.innerHTML = '';
+      tbody.innerHTML = '';
+      lastResultRows = [];
+
+      if (!result) {
+        rowCountEl.textContent = '0 строк';
+        return;
+      }
+      if (result.elapsedMs !== undefined) {
+        execTimeEl.textContent = String(result.elapsedMs) + 'ms';
+        execTimeEl.classList.remove('hidden');
+      }
+
+      if (result.kind === 'error') {
+        errorBox.textContent = 'Ошибка SQL: ' + String(result.error || 'Неизвестная ошибка');
+        errorBox.classList.remove('hidden');
+        rowCountEl.textContent = 'ошибка';
+        return;
+      }
+      if (result.kind === 'mutation') {
+        mutationText.textContent = String(result.message || 'Запрос выполнен');
+        rowCountEl.textContent = String(result.affectedRows || 0) + ' зап.';
+        mutationCard.classList.remove('hidden');
+        return;
+      }
+      if (result.kind !== 'rows') return;
+
+      tableEl.classList.remove('hidden');
+      lastResultRows = Array.isArray(result.rows) ? result.rows : [];
+      rowCountEl.textContent = String(result.rowCount ?? lastResultRows.length) + ' строк';
+      if (lastResultRows.length === 0) {
+        thead.innerHTML = '<th class="p-2 text-slate-400">Результат пуст</th>';
+        tbody.innerHTML = '<tr><td class="p-3 text-slate-400 text-center">Запрос выполнен, 0 записей</td></tr>';
+        return;
+      }
+
+      const cols = Object.keys(lastResultRows[0]);
+      cols.forEach(col => {
+        const th = document.createElement('th');
+        th.className = 'py-2 px-3 font-semibold text-[11px] whitespace-nowrap';
+        th.textContent = col;
+        thead.appendChild(th);
+      });
+      lastResultRows.forEach(row => {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors';
+        cols.forEach(col => {
+          const td = document.createElement('td');
+          td.className = 'py-1.5 px-3 whitespace-nowrap';
+          const val = row[col];
+          td.textContent = val === null || val === undefined ? 'NULL' : String(val);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      if ((result.rowCount || 0) > lastResultRows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = cols.length;
+        td.className = 'p-2 text-slate-400 text-center italic';
+        td.textContent = 'Показано ' + lastResultRows.length + ' из ' + result.rowCount + ' строк';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+    }
 
     function runQuery() {
       const q = codeEditor.value;
       if (!q.trim()) return;
-
+      itemData.query = q;
       const t0 = performance.now();
       try {
-        const res = DB.executeSQL(q);
-        const elapsed = (performance.now() - t0).toFixed(1);
-
-        execTimeEl.textContent = `${elapsed}ms`;
-        execTimeEl.classList.remove('hidden');
-        errorBox.classList.add('hidden');
-        placeholderEl.classList.add('hidden');
-
-        if (res.isMutation) {
-          tableEl.classList.add('hidden');
-          mutationCard.classList.remove('hidden');
-          mutationText.textContent = res.message;
-          rowCountEl.textContent = `${res.affectedRows} зап.`;
-          lastResultRows = [];
-        } else {
-          mutationCard.classList.add('hidden');
-          tableEl.classList.remove('hidden');
-          lastResultRows = res.rows || [];
-          rowCountEl.textContent = `${lastResultRows.length} строк`;
-
-          const thead = el.querySelector('.table-header-row');
-          const tbody = el.querySelector('.table-body');
-          thead.innerHTML = '';
-          tbody.innerHTML = '';
-
-          if (lastResultRows.length === 0) {
-            thead.innerHTML = '<th class="p-2 text-slate-400">Результат пуст</th>';
-            tbody.innerHTML = '<tr><td class="p-3 text-slate-400 text-center">Запрос выполнен, 0 записей</td></tr>';
-            return;
-          }
-
-          const cols = Object.keys(lastResultRows[0]);
-          cols.forEach(col => {
-            const th = document.createElement('th');
-            th.className = 'py-2 px-3 font-semibold text-[11px] whitespace-nowrap';
-            th.textContent = col;
-            thead.appendChild(th);
-          });
-
-          lastResultRows.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors';
-            cols.forEach(col => {
-              const td = document.createElement('td');
-              td.className = 'py-1.5 px-3 whitespace-nowrap';
-              const val = row[col];
-              td.textContent = (val !== null && val !== undefined) ? val : 'NULL';
-              tr.appendChild(td);
-            });
-            tbody.appendChild(tr);
-          });
-        }
-      } catch (err) {
-        tableEl.classList.add('hidden');
-        placeholderEl.classList.add('hidden');
-        mutationCard.classList.add('hidden');
-        errorBox.classList.remove('hidden');
-        errorBox.textContent = `Ошибка SQL: ${err.message || err}`;
-        rowCountEl.textContent = 'ошибка';
+        const result = DB.executeSQL(q);
+        const elapsedMs = Number((performance.now() - t0).toFixed(1));
+        itemData.execution = result.isMutation
+          ? { kind: 'mutation', affectedRows: result.affectedRows || 0, message: result.message, elapsedMs }
+          : {
+              kind: 'rows',
+              rows: (result.rows || []).slice(0, MAX_SHARED_SQL_ROWS),
+              rowCount: result.rowCount ?? (result.rows || []).length,
+              elapsedMs
+            };
+      } catch (error) {
+        itemData.execution = {
+          kind: 'error',
+          error: String(error.message || error),
+          elapsedMs: Number((performance.now() - t0).toFixed(1))
+        };
       }
+      renderExecution();
+      saveBoard();
+      if (window.Collab) Collab.broadcastItemUpdate(id, { query: q, execution: itemData.execution });
     }
 
     el._runQuery = runQuery;
@@ -2253,7 +2321,19 @@ const Widgets = (() => {
     titleInput.addEventListener('input', () => {
       itemData.title = titleInput.value;
       saveBoard();
+      if (window.Collab) Collab.broadcastItemText(id, 'title', titleInput.value);
     });
+
+    el._rerenderWidget = (data) => {
+      if (data) Object.assign(itemData, data);
+      if (document.activeElement !== codeEditor && codeEditor.value !== itemData.query) {
+        codeEditor.value = itemData.query || '';
+      }
+      if (document.activeElement !== titleInput && titleInput.value !== itemData.title) {
+        titleInput.value = itemData.title || '';
+      }
+      renderExecution();
+    };
 
     const btnLock = el.querySelector('.btn-lock-toggle');
     btnLock.addEventListener('pointerdown', e => e.stopPropagation());
@@ -2272,7 +2352,7 @@ const Widgets = (() => {
     });
 
     el.addEventListener('pointerdown', () => selectItem(id));
-    setTimeout(runQuery, 50);
+    renderExecution();
     saveBoard();
     return el;
   }
@@ -2386,7 +2466,7 @@ const Widgets = (() => {
       if (item.type === 'sticky') {
         createSticky(item.x, item.y, item.content, item.theme || item.color, item.width, item.height, item.id, item.isLocked);
       } else if (item.type === 'sql') {
-        createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked);
+        createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked, false, item.execution);
       } else if (item.type === 'assignment') {
         createAssignmentWidget(item.x, item.y, item.title, item.prompt, item.expectedQuery, item.query, item.width, item.height, item.id, item.isLocked, item.attempts, item.comments);
       } else if (item.type === 'quiz') {
@@ -2417,7 +2497,7 @@ const Widgets = (() => {
     if (item.type === 'sticky') {
       createSticky(item.x, item.y, item.content, item.theme || item.color, item.width, item.height, item.id, item.isLocked, true);
     } else if (item.type === 'sql') {
-      createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked, true);
+      createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked, true, item.execution);
     } else if (item.type === 'assignment') {
       createAssignmentWidget(item.x, item.y, item.title, item.prompt, item.expectedQuery, item.query, item.width, item.height, item.id, item.isLocked, item.attempts, item.comments, true);
     } else if (item.type === 'quiz') {
@@ -2562,6 +2642,7 @@ const Widgets = (() => {
           if (ta && document.activeElement !== ta && ta.value !== newItem.query) {
             ta.value = newItem.query || '';
           }
+          if (el._rerenderWidget) el._rerenderWidget(newItem);
         } else if (newItem.type === 'assignment') {
           const ta = el.querySelector('.task-sql-editor');
           if (ta && document.activeElement !== ta && ta.value !== newItem.query) {

@@ -103,8 +103,68 @@ async function retry(fn, timeoutMs = 15000) {
     }));
     assert.deepEqual(size, desired);
   });
+  // Quiz answers are per participant. Completing the quiz must not lock others.
+  const quiz = '#seed_l1_quiz';
+  await alice.locator(quiz + ' .quiz-opt-btn').first().click();
+  assert.equal(await alice.locator(quiz + ' .btn-reset-quiz-ans').isVisible(), true);
+  assert.equal(await bob.locator(quiz + ' .quiz-opt-btn').first().isEnabled(), true);
+  assert.equal(await bob.locator(quiz + ' .btn-reset-quiz-ans').isVisible(), false);
+
+  await alice.locator(quiz + ' .btn-reset-quiz-ans').click();
+  assert.equal(await alice.locator(quiz + ' .quiz-opt-btn').nth(1).isEnabled(), true);
+  await alice.locator(quiz + ' .quiz-opt-btn').nth(1).click();
+  await bob.locator(quiz + ' .quiz-opt-btn').nth(0).click();
+  assert.equal(await alice.locator(quiz + ' .btn-reset-quiz-ans').isVisible(), true);
+  assert.equal(await bob.locator(quiz + ' .btn-reset-quiz-ans').isVisible(), true);
+  assert.equal(await charlie.locator(quiz + ' .quiz-opt-btn').first().isEnabled(), true);
+
+  // Answer should survive refresh within the participant's own browser session.
+  await alice.reload();
+  await retry(async () => {
+    assert.equal(await alice.locator(quiz + ' .btn-reset-quiz-ans').isVisible(), true);
+  });
+  await alice.locator(quiz + ' .btn-reset-quiz-ans').click();
+  assert.equal(await alice.locator(quiz + ' .quiz-opt-btn').first().isEnabled(), true);
+
+  // SQL output (not only the editor text) must travel to other browsers.
+  for (const page of [alice, bob, charlie]) {
+    await page.evaluate(() => Pages.switchToPage('page_2'));
+    await retry(async () => assert.equal(await page.locator('#seed_l2_sql').count(), 1));
+  }
+  const scratch = '#seed_l2_sql';
+  const query = 'SELECT id, name FROM students LIMIT 2;';
+  await alice.locator(scratch + ' .sql-editor-textarea').fill(query);
+  await alice.locator(scratch + ' .btn-run-sql').click();
+  await retry(async () => {
+    for (const page of [bob, charlie]) {
+      assert.equal(await page.locator(scratch + ' .sql-row-count').textContent(), '2 строк');
+      assert.equal(await page.locator(scratch + ' .sql-data-table tbody tr').count(), 2);
+      assert.equal(await page.locator(scratch + ' .sql-editor-textarea').inputValue(), query);
+    }
+  });
+
+  // Result should also be restored for someone joining after query execution.
+  const fourth = await browser.newContext();
+  const dave = await fourth.newPage();
+  dave.on('pageerror', error => errors.push('dave: ' + error.message));
+  await dave.goto(origin + '/?room=browser-test&role=student&name=Dave');
+  await retry(async () => assert.equal(await dave.evaluate(() => Collab.getConnectionStatus().roomReady), true));
+  await dave.evaluate(() => Pages.switchToPage('page_2'));
+  await retry(async () => {
+    assert.equal(await dave.locator(scratch + ' .sql-row-count').textContent(), '2 строк');
+    assert.equal(await dave.locator(scratch + ' .sql-data-table tbody tr').count(), 2);
+  });
+
+  // SQL errors are also snapshots, and do not execute on remote browsers.
+  await alice.locator(scratch + ' .sql-editor-textarea').fill('SELECT * FROM table_that_does_not_exist;');
+  await alice.locator(scratch + ' .btn-run-sql').click();
+  await retry(async () => {
+    assert.equal(await bob.locator(scratch + ' .sql-error-box').isVisible(), true);
+    assert.equal((await bob.locator(scratch + ' .sql-row-count').textContent()), 'ошибка');
+  });
+
   if (errors.length) throw new Error('Browser errors:\n' + errors.join('\n'));
-  console.log('PASS: browser text editing, resizing and late join synchronization');
+  console.log('PASS: sticky text and resize, independent quiz retakes, SQL result sharing and late join');
 })().catch(error => {
   console.error('FAIL: ' + (error.stack || error));
   process.exitCode = 1;
