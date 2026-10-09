@@ -148,8 +148,25 @@ const Pages = (() => {
     }
   }
 
+  function replaceAllPages(newPages, nextActiveId, broadcast = true) {
+    if (!Array.isArray(newPages) || newPages.length === 0) throw Error('Empty board');
+    pages = newPages;
+    activePageId = pages.some(p => p.id === nextActiveId) ? nextActiveId : pages[0].id;
+    const page = getActivePage();
+    Canvas.setScale(page.scale ?? 1);
+    Canvas.setPan(page.pan?.x ?? 70, page.pan?.y ?? 80);
+    Canvas.setStrokes(page.strokes || []);
+    Widgets.loadItems(page.items || []);
+    renderPageTabs();
+    savePagesToStorage(broadcast);
+  }
+
   function onRemotePagesUpdate(remotePages, remoteActivePageId) {
     if (!Array.isArray(remotePages) || remotePages.length === 0) return;
+    if (!remotePages.some(p => p.id === activePageId)) {
+      replaceAllPages(remotePages, remoteActivePageId, false);
+      return;
+    }
     pages = remotePages;
     savePagesToStorage(false);
     renderPageTabs();
@@ -185,7 +202,9 @@ const Pages = (() => {
     } else {
       // Load regular widgets
       if (!targetPage.items || targetPage.items.length === 0) {
-        if (targetPage.id === 'page_1') {
+        if (targetPage.imported) {
+          Widgets.loadItems([]);
+        } else if (targetPage.id === 'page_1') {
           loadDefaultLesson1Widgets();
         } else if (targetPage.id === 'page_2') {
           loadDefaultLesson2Widgets();
@@ -495,6 +514,7 @@ const Pages = (() => {
     resetCurrentPage,
     saveCurrentPageState,
     onRemotePagesUpdate,
+    replaceAllPages,
     getPages: () => pages
   };
 })();

@@ -1,0 +1,42 @@
+'use strict';
+const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
+const { chromium } = require('playwright');
+const port = 32500 + Math.floor(Math.random()*10000);
+const origin = 'http://127.0.0.1:' + port;
+const server = spawn(process.execPath,['server.js'],{env:{...process.env,PORT:String(port)},stdio:'ignore'});
+let browser;
+const pause = ms => new Promise(r=>setTimeout(r,ms));
+async function wait(fn) {let error;for(let i=0;i<80;i++){try{return await fn()}catch(e){error=e;await pause(200)}}throw error;}
+(async()=>{
+ await wait(async()=>assert.equal((await fetch(origin+'/api/collab/health')).status,200));
+ browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+ const a=await browser.newPage();
+ const b=await browser.newPage();
+ await a.goto(origin+'/?room=advanced-test&role=teacher&name=Alice');
+ await b.goto(origin+'/?room=advanced-test&role=student&name=Bob');
+ await wait(async()=>assert.equal(await b.evaluate(()=>Collab.getConnectionStatus().roomReady),true));
+ const task='#seed_l1_assignment', builder='#seed_l1_builder';
+ await a.locator(task+' .task-sql-editor').fill('SELECT name FROM students WHERE gpa > 3.7;');
+ await a.locator(task+' .btn-test-assignment').click();
+ await wait(async()=>assert.equal(await b.locator(task+' .attempts-count').textContent(),'1'));
+ await a.locator(builder+' .sql-block-pill').filter({hasText:'SELECT'}).first().click();
+ await wait(async()=>assert.equal((await b.locator(builder+' .slots-counter').textContent()).startsWith('1 '),true));
+ await a.locator(builder+' .btn-clear-slots').click();
+ await wait(async()=>assert.equal((await b.locator(builder+' .slots-counter').textContent()).startsWith('0 '),true));
+ await a.evaluate(()=>Widgets.getItems().find(i=>i.id==='seed_l1_builder').slots.push('SELECT','*','FROM','students'));
+ await a.evaluate(()=>{
+   Widgets.updateRemoteItemData('seed_l1_builder',{slots:['SELECT','*','FROM','students']});
+   Collab.broadcastItemUpdate('seed_l1_builder',{slots:['SELECT','*','FROM','students']});
+ });
+ await a.locator(builder+' .btn-run-assembled').click();
+ await wait(async()=>assert.equal(await b.locator(builder+' .builder-results-preview').isVisible(),true));
+ const xml=await a.evaluate(()=>BoardXML.serialize());
+ assert.ok(xml.includes('<mirosql-board') && xml.includes('<database>'));
+ await a.evaluate(xml=>BoardXML.importXml(xml),xml);
+ await wait(async()=>assert.equal(await b.locator(task).count(),1));
+ const parsed=await b.evaluate(xml=>BoardXML.parse(xml),xml);
+ assert.ok(parsed.pages.length>0 && parsed.tables.students.length>0);
+ await a.evaluate(()=>{let caught=false;try{BoardXML.parse('<!DOCTYPE x><mirosql-board/>')}catch(e){caught=true}if(!caught)throw Error('Unsafe XML accepted')});
+ console.log('PASS assignments, builder and XML collaboration');
+})().catch(e=>{console.error(e);process.exitCode=1}).finally(async()=>{if(browser)await browser.close();server.kill()});

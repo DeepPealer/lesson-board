@@ -120,7 +120,14 @@
         <span>Сброс</span>
       </button>
 
-      <!-- Export Project -->
+      <button id="btn-import-xml" title="Загрузить XML-доску" class="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-white/95 dark:bg-slate-900/95 rounded-xl border border-slate-200 hover:bg-indigo-50 transition pointer-events-auto">
+        <i data-lucide="folder-open" class="w-3.5 h-3.5"></i><span>Открыть XML</span>
+      </button>
+      <button id="btn-export-xml" title="Скачать XML-доску для редактирования и генерации ИИ" class="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold bg-indigo-50 text-indigo-700 rounded-xl border border-indigo-200 hover:bg-indigo-100 transition pointer-events-auto">
+        <i data-lucide="file-code-2" class="w-3.5 h-3.5"></i><span>XML</span>
+      </button>
+      <input id="input-import-xml" type="file" accept=".xml,application/xml,text/xml" class="hidden" />
+            <!-- Export Project -->
       <button id="btn-export-json" title="Экспорт проекта в JSON" class="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-sm transition shadow-indigo-500/20">
         <i data-lucide="download" class="w-3.5 h-3.5"></i>
         <span>Экспорт</span>
@@ -467,6 +474,7 @@
   <script src="js/windows.js?v=5.0"></script>
   <script src="js/widgets.js?v=5.0"></script>
   <script src="js/pages.js?v=5.0"></script>
-  <script src="js/app.js?v=5.0"></script>
+  <script src="js/board-xml.js?v=6.0"></script>
+  <script src="js/app.js?v=6.0"></script>
 </body>
 </html>

@@ -42,6 +42,8 @@ function patchRoomState(room, packet) {
   const state = roomStates.get(room) || {};
   if (packet.type === 'pages_sync' && Array.isArray(packet.pages)) {
     state.pages = packet.pages;
+  } else if (packet.type === 'board_title' && typeof packet.title === 'string') {
+    state.title = packet.title.slice(0, 200);
   } else if (packet.type === 'db_sync' && packet.tables && typeof packet.tables === 'object') {
     state.tables = packet.tables;
     state.tableSchemas = packet.tableSchemas || {};
@@ -190,6 +192,7 @@ wss.on('connection', socket => {
   const state = roomStates.get(room) || {};
   send(socket, {
     type: 'room_snapshot', room,
+    title: state.title || null,
     pages: state.pages || null,
     tables: state.tables || null,
     tableSchemas: state.tableSchemas || null

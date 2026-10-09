@@ -313,6 +313,7 @@ const Collab = (() => {
       updateOnlineIndicator();
       if (Array.isArray(packet.pages) && window.Pages) Pages.onRemotePagesUpdate(packet.pages, null);
       if (packet.tables && window.DB) DB.onRemoteDbUpdate(packet.tables, packet.tableSchemas);
+      if (typeof packet.title === 'string' && window.BoardXML) BoardXML.setTitle(packet.title, false);
       if (!packet.pages && window.Pages) Collab.broadcastPagesUpdate(Pages.getPages(), Pages.getActivePage()?.id);
       if (!packet.tables && window.DB) Collab.broadcastDbUpdate(DB.getTables(), DB.getTableSchemas());
       return;
@@ -874,6 +875,8 @@ const Collab = (() => {
       }
     }
 
+    if (msg.type === 'board_title' && window.BoardXML) BoardXML.setTitle(msg.title, false);
+
     if (msg.type === 'pages_sync') {
       if (window.Pages && Pages.onRemotePagesUpdate) {
         Pages.onRemotePagesUpdate(msg.pages, msg.activePageId);
@@ -968,6 +971,7 @@ const Collab = (() => {
     broadcastItemLock,
     broadcastItemUpdate,
     broadcastPagesUpdate,
+    broadcastBoardTitle: title => broadcastMessage({ type: 'board_title', title }),
     broadcastDbUpdate,
     broadcastStroke,
     getClientId: () => myClientId,

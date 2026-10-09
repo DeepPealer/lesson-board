@@ -174,20 +174,30 @@ const DB = (() => {
     if (window.Collab) Collab.broadcastDbUpdate(tables, tableSchemas);
   }
 
+  function replaceAllState(nextTables, nextSchemas, broadcast = true, notify = true) {
+    if (!nextTables || typeof nextTables !== 'object') throw Error('Invalid tables snapshot');
+    tables = nextTables;
+    tableSchemas = Object.fromEntries(Object.entries(nextSchemas || {}).map(([name, cols]) => [
+      name, Array.isArray(cols) ? cols : (Array.isArray(cols?.columns) ? cols.columns : [])
+    ]));
+    localStorage.setItem('mirosql_db_tables_v3', JSON.stringify(tables));
+    localStorage.setItem('mirosql_db_schemas_v3', JSON.stringify(tableSchemas));
+    syncToAlaSQL();
+    if (notify) {
+      listeners.forEach(fn => {
+        try { fn({type:'replace'}); } catch (err) { console.error('DB listener error:', err); }
+      });
+      if (window.Widgets) {
+        Widgets.refreshErdWidgets();
+        Widgets.updateErdConnectors();
+      }
+    }
+    if (broadcast && window.Collab) Collab.broadcastDbUpdate(tables, tableSchemas);
+  }
+
   function onRemoteDbUpdate(remoteTables, remoteSchemas) {
     if (!remoteTables) return;
-    tables = remoteTables;
-    if (remoteSchemas) {
-      tableSchemas = Object.fromEntries(Object.entries(remoteSchemas).map(([name, columns]) => [name, Array.isArray(columns) ? columns : (Array.isArray(columns?.columns) ? columns.columns : [])]));
-    }
-    syncToAlaSQL();
-    listeners.forEach(fn => {
-      try { fn(); } catch (e) { console.error('DB listener error:', e); }
-    });
-    if (window.Widgets) {
-      Widgets.refreshErdWidgets();
-      Widgets.updateErdConnectors();
-    }
+    replaceAllState(remoteTables, remoteSchemas, false, true);
   }
 
   // Auto Data Generators
@@ -763,6 +773,7 @@ const DB = (() => {
     explainSqlError,
     checkQueryAgainstExpected,
     onRemoteDbUpdate,
+    replaceAllState,
     on: (eventName, fn) => {
       if (eventName === 'change') listeners.push(fn);
     }

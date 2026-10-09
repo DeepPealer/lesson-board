@@ -22,6 +22,7 @@ const App = (() => {
 
     // Initialize Pages and load active page
     try { Pages.init(); } catch (e) { console.error('Pages.init error:', e); }
+    try { BoardXML.init(); } catch (e) { console.error('BoardXML.init error:', e); }
 
     // Database Manager Drawer
     try {
@@ -98,6 +99,28 @@ const App = (() => {
       showToast('Проект экспортирован в JSON');
     });
 
+    document.getElementById('btn-export-xml')?.addEventListener('click', () => {
+      try { BoardXML.exportFile(); showToast('XML-файл доски сохранён'); }
+      catch (error) { showToast('Ошибка экспорта: ' + error.message); }
+    });
+    const xmlInput = document.getElementById('input-import-xml');
+    document.getElementById('btn-import-xml')?.addEventListener('click', () => xmlInput?.click());
+    xmlInput?.addEventListener('change', async () => {
+      const file = xmlInput.files?.[0];
+      xmlInput.value = '';
+      if (!file) return;
+      try {
+        if (file.size > 6 * 1024 * 1024) throw Error('Файл превышает 6 МБ');
+        const content = await file.text();
+        const parsed = BoardXML.parse(content);
+        if (!confirm('Заменить текущую доску и базу данных содержимым XML? Это изменит общий урок для всех подключённых участников.')) return;
+        BoardXML.importXml(content);
+        showToast('Импортировано страниц: ' + parsed.pages.length);
+      } catch (error) {
+        console.error('XML import:', error);
+        showToast('XML: ' + error.message);
+      }
+    });
     // Drag and drop images directly onto canvas
     window.addEventListener('dragover', (e) => e.preventDefault());
     window.addEventListener('drop', (e) => {
@@ -118,7 +141,10 @@ const App = (() => {
     });
 
     // Title editing auto-save
-    document.getElementById('board-title')?.addEventListener('input', saveState);
+    document.getElementById('board-title')?.addEventListener('input', e => {
+      BoardXML.setTitle(e.target.value, true);
+      saveState();
+    });
   }
 
   function setupShortcuts() {

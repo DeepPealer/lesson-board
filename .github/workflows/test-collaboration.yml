@@ -18,6 +18,8 @@ jobs:
           node --check js/widgets.js
           node --check js/pages.js
           node --check tests/browser-collaboration.test.js
+          node --check tests/advanced-collaboration.test.js
+          node --check js/board-xml.js
       - run: node tests/collaboration.test.js
   browser:
     runs-on: ubuntu-latest
@@ -30,3 +32,4 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: node tests/browser-collaboration.test.js
+      - run: node tests/advanced-collaboration.test.js
