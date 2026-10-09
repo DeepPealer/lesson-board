@@ -1,0 +1,20 @@
+name: Realtime collaboration tests
+on:
+  push:
+    branches: ["main", "fix/realtime-collaboration"]
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: |
+          node --check server.js
+          node --check js/collab.js
+          node --check js/widgets.js
+          node --check js/pages.js
+      - run: node tests/collaboration.test.js

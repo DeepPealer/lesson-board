@@ -60,6 +60,7 @@ const Collab = (() => {
   // SSE EventSource for server-assisted collaboration
   let sseSource = null;
   let isServerConnected = false;
+  let roomReady = false;
 
   // Message dedup
   const seenMessages = new Map();
@@ -284,6 +285,7 @@ const Collab = (() => {
   // Unified Message Dispatch & Reception
   // ==========================================
   function broadcastMessage(packet) {
+    if (!roomReady && packet.type !== 'cursor') return;
     msgSeq++;
     const enriched = {
       ...packet,
@@ -313,6 +315,7 @@ const Collab = (() => {
     if (!packet || typeof packet !== 'object') return;
     if (packet.room && packet.room !== roomId) return;
     if (packet.type === 'room_snapshot') {
+      roomReady = true;
       if (Array.isArray(packet.pages) && window.Pages) Pages.onRemotePagesUpdate(packet.pages, null);
       if (packet.tables && window.DB) DB.onRemoteDbUpdate(packet.tables, packet.tableSchemas);
       if (!packet.pages && window.Pages) Collab.broadcastPagesUpdate(Pages.getPages(), Pages.getActivePage()?.id);

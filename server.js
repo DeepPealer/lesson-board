@@ -1,184 +1,223 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+'use strict';
 
-const PORT = process.env.PORT || 3000;
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { WebSocket, WebSocketServer } = require('ws');
+
+const PORT = Number(process.env.PORT || 3000);
 const ROOT_DIR = __dirname;
+const MAX_PAYLOAD = 8 * 1024 * 1024;
+const roomStates = new Map();
+const peerStates = new Map();
+const connections = new Map();
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD, perMessageDeflate: false });
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf'
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf'
 };
 
-// Active SSE client connections: clientId -> { res, info }
-const sseClients = new Map();
-// Active peer states: clientId -> { id, name, role, color, wx, wy, spotlight, ts }
-const peerStates = new Map();
-const roomStates = new Map();
-const normalizeRoom = value => String(value || 'default').slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
+function safeId(raw, fallback = 'default') {
+  return String(raw || fallback).slice(0, 100).replace(/[^a-zA-Z0-9_-]/g, '') || fallback;
+}
 
-// Periodic cleanup of stale peers (no update in 15 seconds)
-setInterval(() => {
-  const cutoff = Date.now() - 15000;
-  for (const [id, state] of peerStates.entries()) {
-    if (state.ts < cutoff) {
-      peerStates.delete(id);
-      broadcast({ type: 'leave', senderId: id }, id, state.room);
-    }
-  }
-}, 5000);
+function send(socket, packet) {
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(packet));
+}
 
-function broadcast(packet, exceptClientId = null, room = 'default') {
-  const data = `data: ${JSON.stringify(packet)}\n\n`;
-  for (const [id, client] of sseClients.entries()) {
-    if (id === exceptClientId || client.room !== room) continue;
-    try {
-      client.res.write(data);
-    } catch (err) {
-      sseClients.delete(id);
-    }
+function broadcast(room, packet, sender = null) {
+  for (const socket of wss.clients) {
+    if (socket !== sender && socket.room === room) send(socket, packet);
   }
 }
 
-const server = http.createServer((req, res) => {
-  const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = decodeURIComponent(urlObj.pathname);
-
-  // 1. SSE Stream: GET /api/collab/stream
-  if (req.method === 'GET' && pathname === '/api/collab/stream') {
-    const clientId = urlObj.searchParams.get('id') || ('client_' + Math.random().toString(36).substring(2, 8));
-    const room = normalizeRoom(urlObj.searchParams.get('room'));
-
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*'
-    });
-    res.write(': connected\n\n');
-
-    sseClients.set(clientId, { res, id: clientId, room });
-
-    // Send existing peers snapshot to newly connected client
-    const existingPeers = Array.from(peerStates.values()).filter(peer => peer.room === room);
-    if (existingPeers.length > 0) {
-      res.write(`data: ${JSON.stringify({ type: 'peers_snapshot', peers: existingPeers })}\n\n`);
-    }
-
-    const saved = roomStates.get(room) || {};
-    res.write(`data: ${JSON.stringify({ type: 'room_snapshot', room, ...saved })}\n\n`);
-    req.on('close', () => {
-      if (sseClients.get(clientId)?.res !== res) return;
-      sseClients.delete(clientId);
-      peerStates.delete(clientId);
-      broadcast({ type: 'leave', senderId: clientId }, clientId, room);
-    });
-    return;
-  }
-
-  // 2. Collab Message: POST /api/collab/message
-  if (req.method === 'POST' && pathname === '/api/collab/message') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const packet = JSON.parse(body);
-        const senderId = packet._senderId || packet.senderId || packet.id;
-        const room = normalizeRoom(packet.room);
-        const client = sseClients.get(senderId);
-        if (!client || client.room !== room) {
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Connect to the room stream before posting messages' }));
-          return;
-        }
-
-        // If it's a cursor heartbeat/position update, update in-memory state
-        if (packet.type === 'cursor' && senderId) {
-          peerStates.set(senderId, {
-            id: senderId,
-            name: packet.name,
-            role: packet.role,
-            color: packet.color,
-            wx: packet.wx,
-            wy: packet.wy,
-            spotlight: !!packet.spotlight,
-            room,
-            ts: Date.now()
-          });
-        }
-
-        if (packet.type === 'pages_sync' || packet.type === 'db_sync') {
-          const current = roomStates.get(room) || {};
-          if (packet.type === 'pages_sync') current.pages = packet.pages;
-          if (packet.type === 'db_sync') { current.tables = packet.tables; current.tableSchemas = packet.tableSchemas; }
-          roomStates.set(room, current);
-        }
-        if (packet.type === 'leave' && senderId) {
-          peerStates.delete(senderId);
-        }
-
-        // Broadcast to all other connected tabs / browsers
-        broadcast(packet, senderId, room);
-
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (err) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+function patchRoomState(room, packet) {
+  const state = roomStates.get(room) || {};
+  if (packet.type === 'pages_sync' && Array.isArray(packet.pages)) {
+    state.pages = packet.pages;
+  } else if (packet.type === 'db_sync' && packet.tables && typeof packet.tables === 'object') {
+    state.tables = packet.tables;
+    state.tableSchemas = packet.tableSchemas || {};
+  } else if (Array.isArray(state.pages)) {
+    const page = state.pages.find(p => p.id === packet.pageId);
+    if (page) {
+      if (!Array.isArray(page.items)) page.items = [];
+      const index = page.items.findIndex(i => i.id === packet.id);
+      const item = index >= 0 ? page.items[index] : null;
+      switch (packet.type) {
+        case 'item_create':
+          if (packet.item && packet.item.id && !page.items.some(i => i.id === packet.item.id)) {
+            page.items.push(packet.item);
+          }
+          break;
+        case 'item_text':
+          if (item && typeof packet.field === 'string') item[packet.field] = packet.value;
+          break;
+        case 'item_move':
+          if (item) {
+            for (const field of ['x', 'y', 'width', 'height']) {
+              if (Number.isFinite(packet[field])) item[field] = packet[field];
+            }
+          }
+          break;
+        case 'item_lock':
+          if (item) item.isLocked = !!packet.isLocked;
+          break;
+        case 'item_update':
+          if (item && packet.data && typeof packet.data === 'object') Object.assign(item, packet.data);
+          break;
+        case 'item_delete':
+          if (index !== -1) page.items.splice(index, 1);
+          break;
+        case 'stroke_add':
+          if (packet.stroke && packet.stroke.id) {
+            if (!Array.isArray(page.strokes)) page.strokes = [];
+            if (!page.strokes.some(s => s.id === packet.stroke.id)) page.strokes.push(packet.stroke);
+          }
+          break;
+        default:
+          break;
       }
-    });
+    }
+  }
+  roomStates.set(room, state);
+}
+
+const server = http.createServer((req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405);
+    res.end('Method not allowed');
     return;
   }
-
-  // 3. Static File Serving with aggressive no-cache headers
-  let filePath = path.join(ROOT_DIR, pathname === '/' ? 'index.html' : pathname);
-
-  // Security check: prevent directory traversal
-  if (!filePath.startsWith(ROOT_DIR)) {
+  let pathname;
+  try {
+    pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  } catch {
+    res.writeHead(400);
+    res.end('Bad request');
+    return;
+  }
+  const filePath = path.resolve(ROOT_DIR, '.' + (pathname === '/' ? '/index.html' : pathname));
+  if (!filePath.startsWith(ROOT_DIR + path.sep)) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
   }
-
   fs.stat(filePath, (err, stats) => {
     if (err || !stats.isFile()) {
-      // Fallback for SPA routing if needed
-      if (fs.existsSync(path.join(ROOT_DIR, 'index.html'))) {
-        filePath = path.join(ROOT_DIR, 'index.html');
-      } else {
-        res.writeHead(404);
-        res.end('Not Found');
-        return;
-      }
+      res.writeHead(404);
+      res.end('Not found');
+      return;
     }
-
-    const ext = path.extname(filePath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-
-    // NEVER cache js/css/html files during live editing/collaboration
     res.writeHead(200, {
-      'Content-Type': contentType,
-      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-      'Pragma': 'no-cache',
-      'Expires': '0',
-      'Access-Control-Allow-Origin': '*'
+      'Content-Type': MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff'
     });
-
-    fs.createReadStream(filePath).pipe(res);
+    if (req.method === 'HEAD') res.end();
+    else fs.createReadStream(filePath).pipe(res);
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`[MiroSQL Server] Running at http://localhost:${PORT}`);
+server.on('upgrade', (req, socket, head) => {
+  let url;
+  try {
+    url = new URL(req.url, 'http://localhost');
+    if (url.pathname !== '/api/collab/ws') throw new Error('Unknown WebSocket endpoint');
+    // Block cross-origin browser requests; Cloudflare forwards the public Host header.
+    if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) {
+      throw new Error('Cross-origin WebSocket request');
+    }
+  } catch {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const room = safeId(url.searchParams.get('room'));
+  const clientId = safeId(url.searchParams.get('id'), crypto.randomUUID());
+  wss.handleUpgrade(req, socket, head, ws => {
+    ws.room = room;
+    ws.clientId = clientId;
+    wss.emit('connection', ws);
+  });
 });
+
+wss.on('connection', socket => {
+  const room = socket.room;
+  const clientId = socket.clientId;
+  const previous = connections.get(clientId);
+  if (previous) previous.close(1000, 'Reconnected');
+  connections.set(clientId, socket);
+
+  const peers = [...peerStates.values()].filter(peer => peer.room === room && peer.id !== clientId);
+  send(socket, { type: 'peers_snapshot', room, peers });
+  const state = roomStates.get(room) || {};
+  send(socket, {
+    type: 'room_snapshot', room,
+    pages: state.pages || null,
+    tables: state.tables || null,
+    tableSchemas: state.tableSchemas || null
+  });
+
+  socket.on('message', raw => {
+    let packet;
+    try {
+      packet = JSON.parse(raw.toString());
+      if (!packet || typeof packet.type !== 'string') return;
+    } catch {
+      return;
+    }
+
+    packet._senderId = clientId;
+    packet.room = room;
+
+    if (packet.type === 'cursor') {
+      peerStates.set(clientId, {
+        id: clientId, room, name: packet.name, color: packet.color,
+        role: packet.role, wx: packet.wx, wy: packet.wy,
+        spotlight: !!packet.spotlight, ts: Date.now()
+      });
+    } else if (packet.type === 'leave') {
+      peerStates.delete(clientId);
+    } else {
+      patchRoomState(room, packet);
+    }
+
+    broadcast(room, packet, socket);
+  });
+
+  socket.on('close', () => {
+    if (connections.get(clientId) !== socket) return;
+    connections.delete(clientId);
+    peerStates.delete(clientId);
+    broadcast(room, { type: 'leave', room, senderId: clientId }, socket);
+  });
+});
+
+const keepAlive = setInterval(() => {
+  for (const socket of wss.clients) {
+    if (socket.readyState === WebSocket.OPEN) socket.ping();
+  }
+  const expiry = Date.now() - 15000;
+  for (const [id, peer] of peerStates) {
+    if (peer.ts < expiry) {
+      peerStates.delete(id);
+      broadcast(peer.room, { type: 'leave', room: peer.room, senderId: id });
+    }
+  }
+}, 5000);
+keepAlive.unref();
+
+server.listen(PORT, () => {
+  console.log('[MiroSQL] http://localhost:' + server.address().port);
+});
+
+module.exports = server;

@@ -408,3 +408,8 @@
   box-shadow: 0 2px 8px -2px rgba(99, 102, 241, 0.4);
 }
 
+
+/* Resizable floating panels for database tools and ERD. */
+.floating-window { resize: both; min-width: 340px; min-height: 230px; max-width: calc(100vw - 20px); max-height: calc(100vh - 20px); }
+.floating-window .erd-window-body { min-height: 0; }
+.resize-handle { touch-action: none; }

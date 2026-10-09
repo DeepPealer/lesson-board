@@ -151,6 +151,7 @@ const Pages = (() => {
   function onRemotePagesUpdate(remotePages, remoteActivePageId) {
     if (!Array.isArray(remotePages) || remotePages.length === 0) return;
     pages = remotePages;
+    savePagesToStorage(false);
     renderPageTabs();
     if (window.Collab && Collab.isFollowing() && remoteActivePageId && remoteActivePageId !== activePageId) {
       switchToPage(remoteActivePageId, false);

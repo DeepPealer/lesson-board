@@ -2403,6 +2403,9 @@ const Widgets = (() => {
 
   function mountRemoteItem(item) {
     if (!item || !item.id) return;
+    const wasRestoring = restoringItems;
+    restoringItems = true;
+    try {
     const existing = items.find(i => i.id === item.id);
     if (existing) return;
     if (item.type === 'sticky') {
