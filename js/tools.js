@@ -78,3 +78,5 @@ const Tools = (() => {
     getBrushSize: () => brushSize
   };
 })();
+
+window.Tools = Tools;

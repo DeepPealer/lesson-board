@@ -1,9 +1,7 @@
-FROM nginx:alpine
-
-# Copy static assets to nginx html folder
-COPY . /usr/share/nginx/html
-
-# Expose standard web port
-EXPOSE 80
-
-CMD ["nginx", "-g", "daemon off;"]
+FROM node:22-alpine
+WORKDIR /app
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+COPY . .
+EXPOSE 3000
+CMD ["node", "server.js"]

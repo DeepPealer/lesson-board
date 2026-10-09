@@ -9,6 +9,7 @@ const Widgets = (() => {
   let selectedId = null;
   let activeDrag = null;
   let activeResize = null;
+  let restoringItems = false;
 
   const STICKY_THEMES = [
     { name: 'yellow', cls: 'sticky-theme-yellow', label: 'Желтый' },
@@ -270,7 +271,7 @@ const Widgets = (() => {
   // 1. Sticky Note Component
   // ==========================================
   function createSticky(x, y, content = 'Заметка... Нажмите чтобы писать!', themeName = 'yellow', width = 250, height = 220, existingId = null, isLocked = false, fromRemote = false) {
-    const id = existingId || 'sticky_' + Date.now();
+    const id = existingId || 'sticky_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
     const currentTheme = STICKY_THEMES.find(t => t.name === themeName) || STICKY_THEMES[0];
 
     const itemData = {
@@ -286,7 +287,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -380,7 +381,7 @@ const Widgets = (() => {
   // ==========================================
   // 2. Interactive Assignment Card Widget
   // ==========================================
-  function createAssignmentWidget(x, y, title = "Задание: Выборка данных", prompt = "Напишите SQL-запрос для выборки студентов.", expectedQuery = "SELECT * FROM students;", initialSql = "SELECT ", width = 640, height = 540, existingId = null, isLocked = false, existingAttempts = null, existingComments = null, fromRemote = false) {
+  function createAssignmentWidget(x, y, title = "Задание: Выборка данных", prompt = "Напишите SQL-запрос для выборки студентов.", expectedQuery = "SELECT * FROM students;", initialSql = "SELECT ", width = 640, height = 540, existingId = null, isLocked = false, existingAttempts = null, existingComments = null, fromRemote = false, existingEvaluation = null) {
     const id = existingId || 'task_' + Date.now();
     const initialQuery = initialSql || "SELECT ";
 
@@ -397,11 +398,12 @@ const Widgets = (() => {
       query: initialQuery,
       isLocked,
       attempts: existingAttempts || [],
-      comments: existingComments || []
+      comments: existingComments || [],
+      evaluation: existingEvaluation || null
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -583,63 +585,68 @@ const Widgets = (() => {
     const attemptsList = el.querySelector('.task-attempts-list');
     const attemptsCountEl = el.querySelector('.attempts-count');
 
+    function renderEvaluation() {
+      const state = itemData.evaluation;
+      if (!state) {
+        badge.className = 'task-eval-badge px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-600';
+        badge.textContent = 'Не проверено';
+        msgBox.className = 'task-validation-msg p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 leading-relaxed font-sans';
+        msgBox.textContent = 'Напишите ваш SQL-запрос и нажмите «Проверить решение».';
+        return;
+      }
+      const correct = !!state.success;
+      badge.className = correct
+        ? 'task-eval-badge px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+        : 'task-eval-badge px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300';
+      badge.textContent = correct ? 'Пройдено ✅' : 'Ошибка ❌';
+      msgBox.className = correct
+        ? 'task-validation-msg p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 leading-relaxed font-sans'
+        : 'task-validation-msg p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 leading-relaxed font-sans';
+      const emphasis = document.createElement('strong');
+      emphasis.textContent = correct ? 'Отлично! ' : 'Не совсем так: ';
+      msgBox.replaceChildren(emphasis, document.createTextNode(String(state.message || '')));
+    }
+
     function evaluateSubmission() {
       const studentSql = editor.value;
-      const targetExpected = itemData.expectedQuery || expectedQuery;
-      const res = DB.checkQueryAgainstExpected(studentSql, targetExpected);
-
-      // Record Attempt
+      const res = DB.checkQueryAgainstExpected(studentSql, itemData.expectedQuery || expectedQuery);
+      itemData.query = studentSql;
+      itemData.evaluation = { success: !!res.success, message: String(res.message || '') };
       itemData.attempts.push({
         sql: studentSql,
-        success: res.success,
+        success: !!res.success,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        message: res.message
+        message: String(res.message || '')
       });
-      attemptsCountEl.textContent = itemData.attempts.length;
       renderAttempts();
-
-      if (res.success) {
-        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300';
-        badge.textContent = 'Пройдено ✅';
-        msgBox.className = 'p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 leading-relaxed font-sans';
-        msgBox.innerHTML = `<strong>Отлично!</strong> ${res.message}`;
-
-        if (window.confetti) {
-          confetti({
-            particleCount: 25,
-            spread: 50,
-            origin: {
-              x: (el.getBoundingClientRect().left + el.offsetWidth / 2) / window.innerWidth,
-              y: (el.getBoundingClientRect().top + el.offsetHeight / 2) / window.innerHeight
-            }
-          });
-        }
-      } else {
-        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300';
-        badge.textContent = 'Ошибка ❌';
-        msgBox.className = 'p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 leading-relaxed font-sans';
-        msgBox.innerHTML = `<strong>Не совсем так:</strong> ${res.message}`;
-      }
-
+      renderEvaluation();
+      if (res.success && window.confetti) confetti({ particleCount: 25, spread: 50 });
       saveBoard();
+      if (window.Collab) Collab.broadcastItemUpdate(id, {
+        query: studentSql, attempts: itemData.attempts, evaluation: itemData.evaluation
+      });
     }
 
     function renderAttempts() {
       attemptsList.innerHTML = '';
+      attemptsCountEl.textContent = itemData.attempts.length;
       itemData.attempts.slice().reverse().forEach(att => {
         const row = document.createElement('div');
         row.className = `p-1.5 rounded-lg flex items-center justify-between cursor-pointer ${att.success ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300' : 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300'}`;
         row.innerHTML = `
           <div class="flex items-center gap-2 truncate flex-1">
             <span>${att.success ? '✅' : '❌'}</span>
-            <span class="truncate">${att.sql}</span>
+            <span class="truncate"></span>
           </div>
-          <span class="text-[9px] text-slate-400 ml-2 whitespace-nowrap">${att.timestamp}</span>
+          <span class="text-[9px] text-slate-400 ml-2 whitespace-nowrap"></span>
         `;
+        row.querySelector('span.truncate').textContent = att.sql;
+        row.querySelector('span.whitespace-nowrap').textContent = att.timestamp || '';
         row.addEventListener('click', () => {
           editor.value = att.sql;
           itemData.query = att.sql;
           saveBoard();
+          if (window.Collab) Collab.broadcastItemText(id, 'query', att.sql);
         });
         attemptsList.appendChild(row);
       });
@@ -716,6 +723,7 @@ const Widgets = (() => {
           itemData.comments.splice(idx, 1);
           renderComments();
           saveBoard();
+          if (window.Collab) Collab.broadcastItemUpdate(id, { comments: itemData.comments });
         });
         commentsList.appendChild(cEl);
       });
@@ -735,6 +743,7 @@ const Widgets = (() => {
       commentFormPanel.classList.add('hidden');
       renderComments();
       saveBoard();
+      if (window.Collab) Collab.broadcastItemUpdate(id, { comments: itemData.comments });
       if (window.App) window.App.showToast('Комментарий добавлен');
     };
 
@@ -753,6 +762,18 @@ const Widgets = (() => {
 
     renderComments();
     renderAttempts();
+    renderEvaluation();
+
+    el._rerenderWidget = (updated) => {
+      if (updated) Object.assign(itemData, updated);
+      if (document.activeElement !== titleInput) titleInput.value = itemData.title || '';
+      if (document.activeElement !== promptInput) promptInput.value = itemData.prompt || '';
+      if (document.activeElement !== expectedEditor) expectedEditor.value = itemData.expectedQuery || '';
+      if (document.activeElement !== editor) editor.value = itemData.query || '';
+      renderAttempts();
+      renderComments();
+      renderEvaluation();
+    };
 
     // Lock & Delete
     const btnLock = el.querySelector('.btn-lock-toggle');
@@ -762,6 +783,7 @@ const Widgets = (() => {
       itemData.isLocked = !itemData.isLocked;
       updateItemLockUI(id, itemData.isLocked);
       saveBoard();
+      if (window.Collab) Collab.broadcastItemLock(id, itemData.isLocked);
     });
 
     const btnDelete = el.querySelector('.btn-delete-item');
@@ -794,12 +816,12 @@ const Widgets = (() => {
       correctIdx: typeof correctIdx === 'number' ? correctIdx : 1,
       explanation,
       isLocked,
-      selectedIndex: existingSelectedIndex !== undefined ? existingSelectedIndex : null,
+      selectedIndex: null, // Answers belong to individual participants, not the shared board.
       isEditing: false
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -877,6 +899,28 @@ const Widgets = (() => {
     const btnResetAns = el.querySelector('.btn-reset-quiz-ans');
     const btnToggleEdit = el.querySelector('.btn-toggle-quiz-edit');
 
+    // Every participant can answer and retry independently. A shared answer
+    // would lock the question for every student in the room.
+    const quizAnswerKey = 'mirosql_quiz_answer_v2_' +
+      (new URLSearchParams(window.location.search).get('room') || 'default') + '_' + id;
+    const quizSignature = () => JSON.stringify([
+      itemData.question, itemData.options, itemData.correctIdx, itemData.explanation
+    ]);
+    let localSelectedIndex = null;
+    try {
+      const previous = JSON.parse(sessionStorage.getItem(quizAnswerKey) || 'null');
+      if (previous && previous.signature === quizSignature() &&
+          Number.isInteger(previous.index) && previous.index >= 0 &&
+          previous.index < itemData.options.length) {
+        localSelectedIndex = previous.index;
+      }
+    } catch (error) {}
+
+    function resetLocalQuizAnswer() {
+      localSelectedIndex = null;
+      try { sessionStorage.removeItem(quizAnswerKey); } catch (error) {}
+    }
+
     // Render options in solve mode
     function renderSolveOptions() {
       optionsContainer.innerHTML = '';
@@ -904,8 +948,8 @@ const Widgets = (() => {
         optionsContainer.appendChild(btn);
       });
 
-      if (itemData.selectedIndex !== null) {
-        applyAnswer(itemData.selectedIndex, false);
+      if (localSelectedIndex !== null && localSelectedIndex < itemData.options.length) {
+        applyAnswer(localSelectedIndex, false);
       } else {
         explBox.classList.add('hidden');
         btnResetAns.classList.add('hidden');
@@ -913,7 +957,8 @@ const Widgets = (() => {
     }
 
     function applyAnswer(idx, triggerConfetti = true) {
-      itemData.selectedIndex = idx;
+      localSelectedIndex = idx;
+      try { sessionStorage.setItem(quizAnswerKey, JSON.stringify({ index: idx, signature: quizSignature() })); } catch (error) {}
       const isCorrect = idx === itemData.correctIdx;
       btnResetAns.classList.remove('hidden');
 
@@ -939,21 +984,19 @@ const Widgets = (() => {
         explBox.className = 'quiz-explanation mt-2 p-2.5 rounded-xl text-[11px] bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300';
         explBox.innerHTML = `<strong>Не совсем так.</strong> ${itemData.explanation}`;
       }
-      saveBoard();
-      if (window.Collab) Collab.broadcastItemUpdate(id, { selectedIndex: itemData.selectedIndex });
     }
 
     btnResetAns.addEventListener('pointerdown', e => e.stopPropagation());
     btnResetAns.addEventListener('click', (e) => {
       e.stopPropagation();
-      itemData.selectedIndex = null;
+      resetLocalQuizAnswer();
       renderSolveOptions();
-      saveBoard();
-      if (window.Collab) Collab.broadcastItemUpdate(id, { selectedIndex: null });
     });
 
     el._rerenderWidget = (updatedData) => {
+      const previousSignature = quizSignature();
       if (updatedData) Object.assign(itemData, updatedData);
+      if (quizSignature() !== previousSignature) resetLocalQuizAnswer();
       renderSolveOptions();
     };
 
@@ -1035,7 +1078,6 @@ const Widgets = (() => {
         editView.classList.add('hidden');
         solveView.classList.remove('hidden');
         btnToggleEdit.classList.remove('text-indigo-600', 'bg-indigo-50', 'dark:bg-indigo-950/60');
-        itemData.selectedIndex = null;
         renderSolveOptions();
         saveBoard();
       }
@@ -1051,6 +1093,15 @@ const Widgets = (() => {
     btnSaveEdit.addEventListener('click', (e) => {
       e.stopPropagation();
       toggleEditMode(false);
+      resetLocalQuizAnswer();
+      renderSolveOptions();
+      if (window.Collab) Collab.broadcastItemUpdate(id, {
+        question: itemData.question,
+        options: itemData.options,
+        correctIdx: itemData.correctIdx,
+        explanation: itemData.explanation,
+        selectedIndex: null
+      });
       if (window.App) window.App.showToast('Квиз сохранен');
     });
 
@@ -1081,7 +1132,7 @@ const Widgets = (() => {
   // ==========================================
   // 4. Drag & Drop SQL Builder Widget
   // ==========================================
-  function createSqlBuilderWidget(x, y, slots = [], customBlocks = [], width = 520, height = 380, existingId = null, isLocked = false, fromRemote = false) {
+  function createSqlBuilderWidget(x, y, slots = [], customBlocks = [], width = 520, height = 380, existingId = null, isLocked = false, fromRemote = false, existingExecution = null) {
     const id = existingId || 'builder_' + Date.now();
 
     const DEFAULT_BLOCKS = [
@@ -1098,11 +1149,12 @@ const Widgets = (() => {
       height,
       slots: Array.isArray(slots) ? [...slots] : [],
       customBlocks: Array.isArray(customBlocks) ? [...customBlocks] : [],
+      execution: existingExecution || null,
       isLocked
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -1192,6 +1244,89 @@ const Widgets = (() => {
     const btnSubmitCustom = el.querySelector('.btn-submit-custom-block');
     const btnToggleCustom = el.querySelector('.btn-toggle-add-custom');
 
+    // Share the constructed query and its result, never rerun an incoming mutation.
+    function renderBuilderExecution() {
+      const state = itemData.execution;
+      resultsPreview.replaceChildren();
+      resultsPreview.classList.toggle('hidden', !state);
+      statusText.className = 'builder-status-text text-[11px] font-mono text-slate-500';
+      statusText.textContent = '';
+      if (!state) return;
+
+      if (state.kind === 'error') {
+        statusText.className = 'builder-status-text text-[11px] font-mono text-rose-600 font-semibold';
+        statusText.textContent = 'Ошибка SQL';
+        const error = document.createElement('div');
+        error.className = 'p-2 text-rose-600 dark:text-rose-400 font-mono text-xs font-semibold';
+        error.textContent = 'Ошибка: ' + String(state.error || 'Неизвестная ошибка');
+        resultsPreview.appendChild(error);
+        return;
+      }
+
+      statusText.className = 'builder-status-text text-[11px] font-mono text-emerald-600 font-semibold';
+      statusText.textContent = 'Успешно (' + (state.kind === 'rows'
+        ? String(state.rowCount ?? 0) + ' строк'
+        : String(state.affectedRows ?? 0) + ' зап.') + ')';
+
+      if (state.kind === 'mutation') {
+        const line = document.createElement('div');
+        line.className = 'p-2 text-emerald-700 font-mono text-xs';
+        line.textContent = String(state.message || 'Изменения применены');
+        resultsPreview.appendChild(line);
+        return;
+      }
+
+      const rows = Array.isArray(state.rows) ? state.rows.slice(0, 5) : [];
+      if (!rows.length) {
+        resultsPreview.textContent = 'Запрос выполнен успешно (пустой набор результатов)';
+        return;
+      }
+      const cols = Object.keys(rows[0]);
+      const table = document.createElement('table');
+      table.className = 'w-full text-left font-mono';
+      const thead = document.createElement('thead');
+      const tr = document.createElement('tr');
+      for (const col of cols) {
+        const th = document.createElement('th');
+        th.className = 'p-1';
+        th.textContent = col;
+        tr.appendChild(th);
+      }
+      thead.appendChild(tr);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      for (const row of rows) {
+        const rowEl = document.createElement('tr');
+        for (const col of cols) {
+          const cell = document.createElement('td');
+          cell.className = 'p-1 text-slate-800 dark:text-slate-200';
+          cell.textContent = row[col] === null || row[col] === undefined ? 'NULL' : String(row[col]);
+          rowEl.appendChild(cell);
+        }
+        tbody.appendChild(rowEl);
+      }
+      table.appendChild(tbody);
+      resultsPreview.appendChild(table);
+      if ((state.rowCount || 0) > rows.length) {
+        const foot = document.createElement('div');
+        foot.className = 'text-[10px] text-slate-400 mt-1 italic';
+        foot.textContent = 'Показано ' + rows.length + ' из ' + state.rowCount + ' строк';
+        resultsPreview.appendChild(foot);
+      }
+    }
+
+    function commitBuilderChange(invalidateResult = true) {
+      if (invalidateResult) itemData.execution = null;
+      renderBuilderExecution();
+      saveBoard();
+      if (window.Collab) Collab.broadcastItemUpdate(id, {
+        slots: [...itemData.slots],
+        customBlocks: [...itemData.customBlocks],
+        execution: itemData.execution
+      });
+    }
+
+
     // Toggle custom block adder form
     btnToggleCustom.addEventListener('pointerdown', e => e.stopPropagation());
     btnToggleCustom.addEventListener('click', (e) => {
@@ -1208,7 +1343,7 @@ const Widgets = (() => {
         customBlockInput.value = '';
         customBlockForm.classList.add('hidden');
         renderPalette();
-        saveBoard();
+        commitBuilderChange();
         if (window.App) window.App.showToast(`Блок "${val}" добавлен в палитру`);
       }
     };
@@ -1254,7 +1389,7 @@ const Widgets = (() => {
           e.stopPropagation();
           itemData.slots.push(token);
           renderSlots();
-          saveBoard();
+          commitBuilderChange();
         });
 
         // Drag start
@@ -1270,7 +1405,7 @@ const Widgets = (() => {
             e.stopPropagation();
             itemData.customBlocks = itemData.customBlocks.filter(b => b !== token);
             renderPalette();
-            saveBoard();
+            commitBuilderChange();
           });
         }
 
@@ -1296,7 +1431,7 @@ const Widgets = (() => {
       if (token) {
         itemData.slots.push(token);
         renderSlots();
-        saveBoard();
+        commitBuilderChange();
       }
     });
 
@@ -1321,7 +1456,7 @@ const Widgets = (() => {
           e.stopPropagation();
           itemData.slots.splice(idx, 1);
           renderSlots();
-          saveBoard();
+          commitBuilderChange();
         });
 
         dropzone.appendChild(pill);
@@ -1337,62 +1472,41 @@ const Widgets = (() => {
       resultsPreview.classList.add('hidden');
       statusText.textContent = '';
       renderSlots();
-      saveBoard();
+      commitBuilderChange();
     });
 
-    // Run assembled query
+    // Only the initiating browser executes SQL. Other participants render this snapshot.
     const btnRun = el.querySelector('.btn-run-assembled');
     btnRun.addEventListener('pointerdown', e => e.stopPropagation());
     btnRun.addEventListener('click', (e) => {
       e.stopPropagation();
-      const q = itemData.slots.join(' ').trim();
-      if (!q) {
+      const query = itemData.slots.join(' ').trim();
+      if (!query) {
         if (window.App) window.App.showToast('Сначала соберите SQL-запрос из блоков');
         return;
       }
-
       try {
-        const res = DB.executeSQL(q);
-        statusText.className = 'builder-status-text text-[11px] font-mono text-emerald-600 font-semibold';
-        statusText.textContent = `Успешно (${res.rowCount || 0} строк)`;
-
-        resultsPreview.classList.remove('hidden');
-        if (res.rows && res.rows.length > 0) {
-          const cols = Object.keys(res.rows[0]);
-          resultsPreview.innerHTML = `
-            <table class="w-full text-left font-mono">
-              <thead>
-                <tr class="border-b border-slate-200 dark:border-slate-700 text-slate-500">
-                  ${cols.map(c => `<th class="p-1">${c}</th>`).join('')}
-                </tr>
-              </thead>
-              <tbody>
-                ${res.rows.slice(0, 5).map(r => `
-                  <tr class="border-b border-slate-100 dark:border-slate-800/50">
-                    ${cols.map(c => `<td class="p-1 text-slate-800 dark:text-slate-200">${r[c] !== null && r[c] !== undefined ? r[c] : 'NULL'}</td>`).join('')}
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-            ${res.rows.length > 5 ? `<div class="text-[10px] text-slate-400 mt-1 italic">Показано 5 из ${res.rows.length} строк</div>` : ''}
-          `;
-        } else {
-          resultsPreview.innerHTML = `<div class="p-2 text-slate-500 font-mono text-xs">Запрос выполнен успешно (пустой набор результатов)</div>`;
-        }
-
-        if (window.App) window.App.showToast(`Запрос выполнен! Возвращено ${res.rowCount || 0} строк`);
-        if (window.confetti) confetti({ particleCount: 20 });
-      } catch (err) {
-        statusText.className = 'builder-status-text text-[11px] font-mono text-rose-600 font-semibold';
-        statusText.textContent = 'Ошибка SQL';
-        resultsPreview.classList.remove('hidden');
-        resultsPreview.innerHTML = `<div class="p-2 text-rose-600 dark:text-rose-400 font-mono text-xs font-semibold">❌ ${err.message}</div>`;
-        if (window.App) window.App.showToast(`Ошибка: ${err.message}`);
+        const res = DB.executeSQL(query);
+        itemData.execution = res.isMutation
+          ? { kind: 'mutation', message: res.message, affectedRows: res.affectedRows || 0 }
+          : { kind: 'rows', rows: (res.rows || []).slice(0, 5), rowCount: res.rowCount ?? (res.rows || []).length };
+        if (window.App) window.App.showToast('SQL-запрос выполнен');
+      } catch (error) {
+        itemData.execution = { kind: 'error', error: String(error.message || error) };
       }
+      commitBuilderChange(false);
     });
 
     renderPalette();
     renderSlots();
+    renderBuilderExecution();
+
+    el._rerenderWidget = (data) => {
+      if (data) Object.assign(itemData, data);
+      renderPalette();
+      renderSlots();
+      renderBuilderExecution();
+    };
 
     // Lock & Delete
     const btnLock = el.querySelector('.btn-lock-toggle');
@@ -1401,7 +1515,7 @@ const Widgets = (() => {
       e.stopPropagation();
       itemData.isLocked = !itemData.isLocked;
       updateItemLockUI(id, itemData.isLocked);
-      saveBoard();
+      commitBuilderChange();
     });
 
     const btnDelete = el.querySelector('.btn-delete-item');
@@ -1442,7 +1556,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -1508,6 +1622,7 @@ const Widgets = (() => {
     titleInput.addEventListener('input', () => {
       itemData.title = titleInput.value;
       saveBoard();
+      if (window.Collab) Collab.broadcastItemText(id, 'title', titleInput.value);
     });
 
     const container = el.querySelector('.checklist-items-container');
@@ -1767,7 +1882,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -2039,7 +2154,7 @@ const Widgets = (() => {
   // ==========================================
   // 7. General SQL Scratchpad Widget
   // ==========================================
-  function createSqlWidget(x, y, title = "SQL Скретчпад", query = null, width = 560, height = 480, existingId = null, isLocked = false, fromRemote = false) {
+  function createSqlWidget(x, y, title = "SQL Скретчпад", query = null, width = 560, height = 480, existingId = null, isLocked = false, fromRemote = false, existingExecution = null) {
     const id = existingId || 'sql_' + Date.now();
     const initialQuery = query || "SELECT * FROM students;";
 
@@ -2052,11 +2167,12 @@ const Widgets = (() => {
       height,
       title,
       query: initialQuery,
+      execution: existingExecution || null,
       isLocked
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -2160,74 +2276,112 @@ const Widgets = (() => {
     const rowCountEl = el.querySelector('.sql-row-count');
     const execTimeEl = el.querySelector('.sql-exec-time');
 
+    // The execution result is part of the shared widget state, not only its DOM.
+    // Remote clients render this snapshot; they must never execute DML again.
+    const MAX_SHARED_SQL_ROWS = 500;
     let lastResultRows = [];
+
+    function renderExecution() {
+      const result = itemData.execution;
+      const thead = el.querySelector('.table-header-row');
+      const tbody = el.querySelector('.table-body');
+      tableEl.classList.add('hidden');
+      mutationCard.classList.add('hidden');
+      errorBox.classList.add('hidden');
+      placeholderEl.classList.toggle('hidden', !!result);
+      execTimeEl.classList.add('hidden');
+      thead.innerHTML = '';
+      tbody.innerHTML = '';
+      lastResultRows = [];
+
+      if (!result) {
+        rowCountEl.textContent = '0 строк';
+        return;
+      }
+      if (result.elapsedMs !== undefined) {
+        execTimeEl.textContent = String(result.elapsedMs) + 'ms';
+        execTimeEl.classList.remove('hidden');
+      }
+
+      if (result.kind === 'error') {
+        errorBox.textContent = 'Ошибка SQL: ' + String(result.error || 'Неизвестная ошибка');
+        errorBox.classList.remove('hidden');
+        rowCountEl.textContent = 'ошибка';
+        return;
+      }
+      if (result.kind === 'mutation') {
+        mutationText.textContent = String(result.message || 'Запрос выполнен');
+        rowCountEl.textContent = String(result.affectedRows || 0) + ' зап.';
+        mutationCard.classList.remove('hidden');
+        return;
+      }
+      if (result.kind !== 'rows') return;
+
+      tableEl.classList.remove('hidden');
+      lastResultRows = Array.isArray(result.rows) ? result.rows : [];
+      rowCountEl.textContent = String(result.rowCount ?? lastResultRows.length) + ' строк';
+      if (lastResultRows.length === 0) {
+        thead.innerHTML = '<th class="p-2 text-slate-400">Результат пуст</th>';
+        tbody.innerHTML = '<tr><td class="p-3 text-slate-400 text-center">Запрос выполнен, 0 записей</td></tr>';
+        return;
+      }
+
+      const cols = Object.keys(lastResultRows[0]);
+      cols.forEach(col => {
+        const th = document.createElement('th');
+        th.className = 'py-2 px-3 font-semibold text-[11px] whitespace-nowrap';
+        th.textContent = col;
+        thead.appendChild(th);
+      });
+      lastResultRows.forEach(row => {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors';
+        cols.forEach(col => {
+          const td = document.createElement('td');
+          td.className = 'py-1.5 px-3 whitespace-nowrap';
+          const val = row[col];
+          td.textContent = val === null || val === undefined ? 'NULL' : String(val);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      if ((result.rowCount || 0) > lastResultRows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = cols.length;
+        td.className = 'p-2 text-slate-400 text-center italic';
+        td.textContent = 'Показано ' + lastResultRows.length + ' из ' + result.rowCount + ' строк';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+    }
 
     function runQuery() {
       const q = codeEditor.value;
       if (!q.trim()) return;
-
+      itemData.query = q;
       const t0 = performance.now();
       try {
-        const res = DB.executeSQL(q);
-        const elapsed = (performance.now() - t0).toFixed(1);
-
-        execTimeEl.textContent = `${elapsed}ms`;
-        execTimeEl.classList.remove('hidden');
-        errorBox.classList.add('hidden');
-        placeholderEl.classList.add('hidden');
-
-        if (res.isMutation) {
-          tableEl.classList.add('hidden');
-          mutationCard.classList.remove('hidden');
-          mutationText.textContent = res.message;
-          rowCountEl.textContent = `${res.affectedRows} зап.`;
-          lastResultRows = [];
-        } else {
-          mutationCard.classList.add('hidden');
-          tableEl.classList.remove('hidden');
-          lastResultRows = res.rows || [];
-          rowCountEl.textContent = `${lastResultRows.length} строк`;
-
-          const thead = el.querySelector('.table-header-row');
-          const tbody = el.querySelector('.table-body');
-          thead.innerHTML = '';
-          tbody.innerHTML = '';
-
-          if (lastResultRows.length === 0) {
-            thead.innerHTML = '<th class="p-2 text-slate-400">Результат пуст</th>';
-            tbody.innerHTML = '<tr><td class="p-3 text-slate-400 text-center">Запрос выполнен, 0 записей</td></tr>';
-            return;
-          }
-
-          const cols = Object.keys(lastResultRows[0]);
-          cols.forEach(col => {
-            const th = document.createElement('th');
-            th.className = 'py-2 px-3 font-semibold text-[11px] whitespace-nowrap';
-            th.textContent = col;
-            thead.appendChild(th);
-          });
-
-          lastResultRows.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors';
-            cols.forEach(col => {
-              const td = document.createElement('td');
-              td.className = 'py-1.5 px-3 whitespace-nowrap';
-              const val = row[col];
-              td.textContent = (val !== null && val !== undefined) ? val : 'NULL';
-              tr.appendChild(td);
-            });
-            tbody.appendChild(tr);
-          });
-        }
-      } catch (err) {
-        tableEl.classList.add('hidden');
-        placeholderEl.classList.add('hidden');
-        mutationCard.classList.add('hidden');
-        errorBox.classList.remove('hidden');
-        errorBox.textContent = `Ошибка SQL: ${err.message || err}`;
-        rowCountEl.textContent = 'ошибка';
+        const result = DB.executeSQL(q);
+        const elapsedMs = Number((performance.now() - t0).toFixed(1));
+        itemData.execution = result.isMutation
+          ? { kind: 'mutation', affectedRows: result.affectedRows || 0, message: result.message, elapsedMs }
+          : {
+              kind: 'rows',
+              rows: (result.rows || []).slice(0, MAX_SHARED_SQL_ROWS),
+              rowCount: result.rowCount ?? (result.rows || []).length,
+              elapsedMs
+            };
+      } catch (error) {
+        itemData.execution = {
+          kind: 'error',
+          error: String(error.message || error),
+          elapsedMs: Number((performance.now() - t0).toFixed(1))
+        };
       }
+      renderExecution();
+      saveBoard();
+      if (window.Collab) Collab.broadcastItemUpdate(id, { query: q, execution: itemData.execution });
     }
 
     el._runQuery = runQuery;
@@ -2250,7 +2404,19 @@ const Widgets = (() => {
     titleInput.addEventListener('input', () => {
       itemData.title = titleInput.value;
       saveBoard();
+      if (window.Collab) Collab.broadcastItemText(id, 'title', titleInput.value);
     });
+
+    el._rerenderWidget = (data) => {
+      if (data) Object.assign(itemData, data);
+      if (document.activeElement !== codeEditor && codeEditor.value !== itemData.query) {
+        codeEditor.value = itemData.query || '';
+      }
+      if (document.activeElement !== titleInput && titleInput.value !== itemData.title) {
+        titleInput.value = itemData.title || '';
+      }
+      renderExecution();
+    };
 
     const btnLock = el.querySelector('.btn-lock-toggle');
     btnLock.addEventListener('pointerdown', e => e.stopPropagation());
@@ -2269,7 +2435,7 @@ const Widgets = (() => {
     });
 
     el.addEventListener('pointerdown', () => selectItem(id));
-    setTimeout(runQuery, 50);
+    renderExecution();
     saveBoard();
     return el;
   }
@@ -2292,7 +2458,7 @@ const Widgets = (() => {
     };
 
     registerItem(itemData);
-    if (!fromRemote && window.Collab) {
+    if (!fromRemote && !restoringItems && window.Collab) {
       Collab.broadcastItemCreate(itemData);
     }
 
@@ -2359,8 +2525,8 @@ const Widgets = (() => {
   }
 
   function saveBoard() {
-    if (window.Pages) Pages.saveCurrentPageState();
-    if (window.App) window.App.saveState();
+    if (restoringItems) return;
+    if (window.Pages) Pages.saveCurrentPageState(false);
   }
 
   function clearAll() {
@@ -2375,19 +2541,21 @@ const Widgets = (() => {
   }
 
   function loadItems(loadedItems) {
+    restoringItems = true;
+    try {
     clearAll();
     if (!loadedItems) return;
     loadedItems.forEach(item => {
       if (item.type === 'sticky') {
         createSticky(item.x, item.y, item.content, item.theme || item.color, item.width, item.height, item.id, item.isLocked);
       } else if (item.type === 'sql') {
-        createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked);
+        createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked, false, item.execution);
       } else if (item.type === 'assignment') {
-        createAssignmentWidget(item.x, item.y, item.title, item.prompt, item.expectedQuery, item.query, item.width, item.height, item.id, item.isLocked, item.attempts, item.comments);
+        createAssignmentWidget(item.x, item.y, item.title, item.prompt, item.expectedQuery, item.query, item.width, item.height, item.id, item.isLocked, item.attempts, item.comments, false, item.evaluation);
       } else if (item.type === 'quiz') {
         createQuizWidget(item.x, item.y, item.question, item.options, item.correctIdx, item.explanation, item.width, item.height, item.id, item.isLocked, item.selectedIndex);
       } else if (item.type === 'sql_builder') {
-        createSqlBuilderWidget(item.x, item.y, item.slots, item.customBlocks, item.width, item.height, item.id, item.isLocked);
+        createSqlBuilderWidget(item.x, item.y, item.slots, item.customBlocks, item.width, item.height, item.id, item.isLocked, false, item.execution);
       } else if (item.type === 'checklist') {
         createChecklistWidget(item.x, item.y, item.items, item.width, item.height, item.id, item.isLocked, item.title);
       } else if (item.type === 'erd_table') {
@@ -2399,22 +2567,26 @@ const Widgets = (() => {
       }
     });
     updateErdConnectors();
+    } finally { restoringItems = false; }
   }
 
   function mountRemoteItem(item) {
     if (!item || !item.id) return;
+    const wasRestoring = restoringItems;
+    restoringItems = true;
+    try {
     const existing = items.find(i => i.id === item.id);
     if (existing) return;
     if (item.type === 'sticky') {
       createSticky(item.x, item.y, item.content, item.theme || item.color, item.width, item.height, item.id, item.isLocked, true);
     } else if (item.type === 'sql') {
-      createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked, true);
+      createSqlWidget(item.x, item.y, item.title, item.query, item.width, item.height, item.id, item.isLocked, true, item.execution);
     } else if (item.type === 'assignment') {
-      createAssignmentWidget(item.x, item.y, item.title, item.prompt, item.expectedQuery, item.query, item.width, item.height, item.id, item.isLocked, item.attempts, item.comments, true);
+      createAssignmentWidget(item.x, item.y, item.title, item.prompt, item.expectedQuery, item.query, item.width, item.height, item.id, item.isLocked, item.attempts, item.comments, true, item.evaluation);
     } else if (item.type === 'quiz') {
       createQuizWidget(item.x, item.y, item.question, item.options, item.correctIdx, item.explanation, item.width, item.height, item.id, item.isLocked, item.selectedIndex, true);
     } else if (item.type === 'sql_builder') {
-      createSqlBuilderWidget(item.x, item.y, item.slots, item.customBlocks, item.width, item.height, item.id, item.isLocked, true);
+      createSqlBuilderWidget(item.x, item.y, item.slots, item.customBlocks, item.width, item.height, item.id, item.isLocked, true, item.execution);
     } else if (item.type === 'checklist') {
       createChecklistWidget(item.x, item.y, item.items, item.width, item.height, item.id, item.isLocked, item.title, true);
     } else if (item.type === 'erd_table') {
@@ -2425,7 +2597,8 @@ const Widgets = (() => {
       createImage(item.x, item.y, item.src, item.width, item.height, item.id, item.isLocked, true);
     }
     updateErdConnectors();
-    if (window.Pages) Pages.saveCurrentPageState();
+    } finally { restoringItems = wasRestoring; }
+    if (window.Pages) Pages.saveCurrentPageState(false);
   }
 
   function updateRemoteItemText(id, field, value) {
@@ -2479,9 +2652,8 @@ const Widgets = (() => {
     el.style.top = `${y}px`;
     if (width) el.style.width = `${width}px`;
     if (height) el.style.height = `${height}px`;
-    if (item && item.type === 'erd_table') {
-      updateErdConnectors();
-    }
+    if (item && item.type === 'erd_table') updateErdConnectors();
+    if (window.Pages) Pages.saveCurrentPageState(false);
   }
 
   function deleteRemoteItem(id) {
@@ -2553,6 +2725,7 @@ const Widgets = (() => {
           if (ta && document.activeElement !== ta && ta.value !== newItem.query) {
             ta.value = newItem.query || '';
           }
+          if (el._rerenderWidget) el._rerenderWidget(newItem);
         } else if (newItem.type === 'assignment') {
           const ta = el.querySelector('.task-sql-editor');
           if (ta && document.activeElement !== ta && ta.value !== newItem.query) {
@@ -2562,6 +2735,7 @@ const Widgets = (() => {
           if (promptInp && document.activeElement !== promptInp && promptInp.value !== newItem.prompt) {
             promptInp.value = newItem.prompt || '';
           }
+          if (el._rerenderWidget) el._rerenderWidget(newItem);
         } else if (el._rerenderWidget) {
           el._rerenderWidget(newItem);
         }
@@ -2600,3 +2774,5 @@ const Widgets = (() => {
     syncItemsFromState
   };
 })();
+
+window.Widgets = Widgets;

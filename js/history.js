@@ -123,3 +123,5 @@ const History = (() => {
     canRedo: () => redoStack.length > 0
   };
 })();
+
+window.History = History;

@@ -20,7 +20,8 @@ const Collab = (() => {
   const IDENTITY_KEY = 'mirosql_user_identity_v1';
   const SESSION_KEY = 'mirosql_session_identity_v1';
   const CURSOR_PREFIX = 'mirosql_cursor_';
-  const SYNC_KEY = 'mirosql_collab_sync_v5';
+  const roomId = (new URLSearchParams(window.location.search).get('room') || 'default').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 100) || 'default';
+  const SYNC_KEY = 'mirosql_collab_sync_v5_' + roomId;
 
   // Palette
   const USER_COLORS = [
@@ -51,12 +52,11 @@ const Collab = (() => {
   let bc = null;
   try {
     if (typeof BroadcastChannel !== 'undefined') {
-      bc = new BroadcastChannel('mirosql_collab_v5');
+      bc = new BroadcastChannel('mirosql_collab_v5_' + roomId);
     }
   } catch (e) {}
 
-  // SSE EventSource for server-assisted collaboration
-  let sseSource = null;
+  // WebSocket is the cross-browser transport. BroadcastChannel remains a local fallback.
   let isServerConnected = false;
 
   // Message dedup
@@ -238,56 +238,55 @@ const Collab = (() => {
     startCollaboration();
   }
 
-  // ==========================================
-  // Transport 1: Server-Sent Events (SSE)
-  // ==========================================
+  // WebSocket transport (works behind Cloudflare Tunnel).
+  let socket = null;
+  let roomReady = false;
   function initServerConnection() {
-    try {
-      const sseUrl = `/api/collab/stream?id=${encodeURIComponent(myClientId)}`;
-      sseSource = new EventSource(sseUrl);
-
-      sseSource.onopen = () => {
-        isServerConnected = true;
-        console.log('[Collab] Connected to SSE server');
-      };
-
-      sseSource.onmessage = (e) => {
-        try {
-          const packet = JSON.parse(e.data);
-          handleIncomingPacket(packet);
-        } catch (err) {}
-      };
-
-      sseSource.onerror = () => {
-        isServerConnected = false;
-        // EventSource automatically attempts reconnection
-      };
-    } catch (e) {
-      console.warn('[Collab] SSE connection not available:', e);
-    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = protocol + '//' + window.location.host + '/api/collab/ws?id=' +
+      encodeURIComponent(myClientId) + '&room=' + encodeURIComponent(roomId);
+    socket = new WebSocket(url);
+    socket.onopen = () => {
+      isServerConnected = true;
+      updateOnlineIndicator();
+      console.info('[Collab] WebSocket connected, awaiting room state:', roomId);
+    };
+    socket.onmessage = event => {
+      try { handleIncomingPacket(JSON.parse(event.data)); }
+      catch (error) { console.error('[Collab] Failed to process server message:', error); }
+    };
+    socket.onerror = () => {
+      isServerConnected = false;
+      updateOnlineIndicator();
+      console.warn('[Collab] WebSocket connection failed:', url);
+    };
+    socket.onclose = event => {
+      isServerConnected = false;
+      roomReady = false;
+      updateOnlineIndicator();
+      console.warn('[Collab] WebSocket closed:', event.code, event.reason || '(no reason)');
+      if (isReady) setTimeout(initServerConnection, 2000);
+    };
   }
 
   function sendToServer(packet) {
-    if (!isReady) return;
-    try {
-      fetch('/api/collab/message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(packet)
-      }).catch(() => {});
-    } catch (e) {}
+    if (!isReady || !roomReady || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ ...packet, room: roomId, _senderId: myClientId }));
   }
 
   // ==========================================
   // Unified Message Dispatch & Reception
   // ==========================================
   function broadcastMessage(packet) {
+    // Local tabs must continue to share edits even while the server is offline.
+    if (!isReady) return;
     msgSeq++;
     const enriched = {
       ...packet,
       _id: `${myClientId}_${msgSeq}_${Date.now()}`,
       _senderId: myClientId,
-      _time: Date.now()
+      _time: Date.now(),
+      room: roomId
     };
 
     // 1. Send to local BroadcastChannel
@@ -308,6 +307,17 @@ const Collab = (() => {
 
   function handleIncomingPacket(packet) {
     if (!packet || typeof packet !== 'object') return;
+    if (packet.room && packet.room !== roomId) return;
+    if (packet.type === 'room_snapshot') {
+      roomReady = true;
+      updateOnlineIndicator();
+      if (Array.isArray(packet.pages) && window.Pages) Pages.onRemotePagesUpdate(packet.pages, null);
+      if (packet.tables && window.DB) DB.onRemoteDbUpdate(packet.tables, packet.tableSchemas);
+      if (typeof packet.title === 'string' && window.BoardXML) BoardXML.setTitle(packet.title, false);
+      if (!packet.pages && window.Pages) Collab.broadcastPagesUpdate(Pages.getPages(), Pages.getActivePage()?.id);
+      if (!packet.tables && window.DB) Collab.broadcastDbUpdate(DB.getTables(), DB.getTableSchemas());
+      return;
+    }
     const senderId = packet._senderId || packet.senderId || packet.id;
     if (senderId === myClientId) return; // skip self
 
@@ -339,6 +349,7 @@ const Collab = (() => {
 
     // Dedup non-cursor messages
     if (isDuplicate(packet._id)) return;
+    if (packet.pageId && packet.pageId !== Pages.getActivePage()?.id) return;
 
     // Handle board sync commands
     handleSyncMessage(packet);
@@ -363,6 +374,7 @@ const Collab = (() => {
       wx: lastWorldX,
       wy: lastWorldY,
       spotlight: isSpotlightActive,
+      room: roomId,
       ts: now
     };
 
@@ -409,7 +421,7 @@ const Collab = (() => {
         const raw = localStorage.getItem(key);
         if (!raw) continue;
         const data = JSON.parse(raw);
-        if (!data || !data.ts) continue;
+        if (!data || !data.ts || (data.room && data.room !== roomId)) continue;
 
         // Clean up stale cursors (> 12 seconds old)
         if (now - data.ts > 12000) {
@@ -580,16 +592,32 @@ const Collab = (() => {
     const textEl = document.getElementById('collab-online-text');
     if (!indicator || !textEl) return;
 
-    const totalCount = 1 + remotePeers.size;
     indicator.classList.remove('hidden');
     indicator.classList.add('flex');
 
+    const online = roomReady && socket && socket.readyState === WebSocket.OPEN;
+    const dot = indicator.querySelector('span.relative > span:last-child');
+    const ping = indicator.querySelector('span.relative > span:first-child');
+    if (dot) {
+      dot.classList.toggle('bg-emerald-500', online);
+      dot.classList.toggle('bg-amber-500', !online);
+    }
+    if (ping) ping.classList.toggle('hidden', !online);
+
+    const totalCount = 1 + remotePeers.size;
+    if (!online) {
+      textEl.textContent = remotePeers.size ? totalCount + ' локально · сервер отключён' : 'Нет связи с сервером';
+      indicator.title = 'Курсоры между вкладками могут работать локально. Откройте F12 → Network → WS и проверьте /api/collab/ws.';
+      return;
+    }
+
+    indicator.title = 'WebSocket подключён к комнате ' + roomId;
     if (remotePeers.size === 0) {
       textEl.textContent = '1 онлайн';
     } else {
       const peerNames = Array.from(remotePeers.values()).map(p => p.name).slice(0, 2);
-      const othersText = remotePeers.size > 2 ? ` +${remotePeers.size - 2}` : '';
-      textEl.textContent = `${totalCount} онлайн (${peerNames.join(', ')}${othersText})`;
+      const othersText = remotePeers.size > 2 ? ' +' + (remotePeers.size - 2) : '';
+      textEl.textContent = totalCount + ' онлайн (' + peerNames.join(', ') + othersText + ')';
     }
   }
 
@@ -847,6 +875,8 @@ const Collab = (() => {
       }
     }
 
+    if (msg.type === 'board_title' && window.BoardXML) BoardXML.setTitle(msg.title, false);
+
     if (msg.type === 'pages_sync') {
       if (window.Pages && Pages.onRemotePagesUpdate) {
         Pages.onRemotePagesUpdate(msg.pages, msg.activePageId);
@@ -869,15 +899,15 @@ const Collab = (() => {
   // ==========================================
   // Public Broadcasting Helpers
   // ==========================================
-  function broadcastItemText(id, field, value) { broadcastMessage({ type: 'item_text', id, field, value }); }
-  function broadcastItemMove(id, x, y, width, height) { broadcastMessage({ type: 'item_move', id, x, y, width, height }); }
-  function broadcastItemCreate(item) { broadcastMessage({ type: 'item_create', item }); }
-  function broadcastItemDelete(id) { broadcastMessage({ type: 'item_delete', id }); }
-  function broadcastItemLock(id, isLocked) { broadcastMessage({ type: 'item_lock', id, isLocked }); }
-  function broadcastItemUpdate(id, data) { broadcastMessage({ type: 'item_update', id, data }); }
+  function broadcastItemText(id, field, value) { broadcastMessage({ type: 'item_text', id, field, value, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemMove(id, x, y, width, height) { broadcastMessage({ type: 'item_move', id, x, y, width, height, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemCreate(item) { broadcastMessage({ type: 'item_create', id: item.id, item, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemDelete(id) { broadcastMessage({ type: 'item_delete', id, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemLock(id, isLocked) { broadcastMessage({ type: 'item_lock', id, isLocked, pageId: Pages.getActivePage()?.id }); }
+  function broadcastItemUpdate(id, data) { broadcastMessage({ type: 'item_update', id, data, pageId: Pages.getActivePage()?.id }); }
   function broadcastPagesUpdate(pages, activePageId) { broadcastMessage({ type: 'pages_sync', pages, activePageId }); }
   function broadcastDbUpdate(tables, tableSchemas) { broadcastMessage({ type: 'db_sync', tables, tableSchemas }); }
-  function broadcastStroke(stroke) { broadcastMessage({ type: 'stroke_add', stroke }); }
+  function broadcastStroke(stroke) { broadcastMessage({ type: 'stroke_add', stroke, pageId: Pages.getActivePage()?.id }); }
 
   // ==========================================
   // Init
@@ -895,7 +925,8 @@ const Collab = (() => {
         try {
           const peerId = e.key.substring(CURSOR_PREFIX.length);
           if (peerId !== myClientId) {
-            renderPeerCursor(peerId, JSON.parse(e.newValue), Date.now());
+            const peer = JSON.parse(e.newValue);
+            if (!peer.room || peer.room === roomId) renderPeerCursor(peerId, peer, Date.now());
           }
         } catch (err) {}
       } else if (e.key === SYNC_KEY) {
@@ -940,11 +971,16 @@ const Collab = (() => {
     broadcastItemLock,
     broadcastItemUpdate,
     broadcastPagesUpdate,
+    broadcastBoardTitle: title => broadcastMessage({ type: 'board_title', title }),
     broadcastDbUpdate,
     broadcastStroke,
     getClientId: () => myClientId,
     getPeers: () => Array.from(remotePeers.values()),
     getUserName: () => userName,
+    getConnectionStatus: () => ({ room: roomId, websocketOpen: isServerConnected, roomReady, state: socket?.readyState ?? -1 }),
     getUserColor: () => userColor
   };
 })();
+
+// Allow widgets and other classic scripts to discover the collaboration API.
+window.Collab = Collab;

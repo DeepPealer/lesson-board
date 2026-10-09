@@ -321,3 +321,5 @@ const Canvas = (() => {
     centerView
   };
 })();
+
+window.Canvas = Canvas;

@@ -68,7 +68,7 @@ const Pages = (() => {
       }
     });
 
-    savePagesToStorage();
+    savePagesToStorage(true);
   }
 
   function getActivePage() {
@@ -126,10 +126,10 @@ const Pages = (() => {
       }
     ];
     activePageId = 'page_1';
-    savePagesToStorage();
+    savePagesToStorage(false);
   }
 
-  function saveCurrentPageState(broadcast = true) {
+  function saveCurrentPageState(broadcast = false) {
     const current = getActivePage();
     if (!current) return;
 
@@ -148,9 +148,27 @@ const Pages = (() => {
     }
   }
 
+  function replaceAllPages(newPages, nextActiveId, broadcast = true) {
+    if (!Array.isArray(newPages) || newPages.length === 0) throw Error('Empty board');
+    pages = newPages;
+    activePageId = pages.some(p => p.id === nextActiveId) ? nextActiveId : pages[0].id;
+    const page = getActivePage();
+    Canvas.setScale(page.scale ?? 1);
+    Canvas.setPan(page.pan?.x ?? 70, page.pan?.y ?? 80);
+    Canvas.setStrokes(page.strokes || []);
+    Widgets.loadItems(page.items || []);
+    renderPageTabs();
+    savePagesToStorage(broadcast);
+  }
+
   function onRemotePagesUpdate(remotePages, remoteActivePageId) {
     if (!Array.isArray(remotePages) || remotePages.length === 0) return;
+    if (!remotePages.some(p => p.id === activePageId)) {
+      replaceAllPages(remotePages, remoteActivePageId, false);
+      return;
+    }
     pages = remotePages;
+    savePagesToStorage(false);
     renderPageTabs();
     if (window.Collab && Collab.isFollowing() && remoteActivePageId && remoteActivePageId !== activePageId) {
       switchToPage(remoteActivePageId, false);
@@ -184,7 +202,9 @@ const Pages = (() => {
     } else {
       // Load regular widgets
       if (!targetPage.items || targetPage.items.length === 0) {
-        if (targetPage.id === 'page_1') {
+        if (targetPage.imported) {
+          Widgets.loadItems([]);
+        } else if (targetPage.id === 'page_1') {
           loadDefaultLesson1Widgets();
         } else if (targetPage.id === 'page_2') {
           loadDefaultLesson2Widgets();
@@ -216,7 +236,7 @@ const Pages = (() => {
       items: []
     };
     pages.push(newPage);
-    savePagesToStorage();
+    savePagesToStorage(true);
     switchToPage(newId, false);
   }
 
@@ -230,7 +250,7 @@ const Pages = (() => {
       if (activePageId === pageId) {
         activePageId = pages[0].id;
       }
-      savePagesToStorage();
+      savePagesToStorage(true);
       switchToPage(activePageId, false);
     }
   }
@@ -241,7 +261,7 @@ const Pages = (() => {
     const newTitle = prompt('Введите название страницы:', p.title);
     if (newTitle && newTitle.trim()) {
       p.title = newTitle.trim();
-      savePagesToStorage();
+      savePagesToStorage(true);
       renderPageTabs();
     }
   }
@@ -325,7 +345,7 @@ const Pages = (() => {
       });
       Widgets.updateErdConnectors();
       page.items = Widgets.getItems();
-      savePagesToStorage();
+      savePagesToStorage(true);
       return;
     }
 
@@ -359,7 +379,7 @@ const Pages = (() => {
 
     Widgets.updateErdConnectors();
     page.items = Widgets.getItems();
-    savePagesToStorage();
+    savePagesToStorage(true);
   }
 
   // Default seed for Lesson 1
@@ -412,7 +432,7 @@ const Pages = (() => {
     const p1 = pages.find(p => p.id === 'page_1');
     if (p1) {
       p1.items = Widgets.getItems();
-      savePagesToStorage();
+      savePagesToStorage(true);
     }
   }
 
@@ -454,7 +474,7 @@ const Pages = (() => {
     const p2 = pages.find(p => p.id === 'page_2');
     if (p2) {
       p2.items = Widgets.getItems();
-      savePagesToStorage();
+      savePagesToStorage(true);
     }
   }
 
@@ -479,7 +499,7 @@ const Pages = (() => {
       Widgets.createSticky(80, 80, `Страница: ${p.title}`, 'yellow');
     }
     p.items = Widgets.getItems();
-    savePagesToStorage();
+    savePagesToStorage(true);
     renderPageTabs();
     if (window.App) window.App.showToast(`Страница «${p.title}» сброшена`);
   }
@@ -494,6 +514,9 @@ const Pages = (() => {
     resetCurrentPage,
     saveCurrentPageState,
     onRemotePagesUpdate,
+    replaceAllPages,
     getPages: () => pages
   };
 })();
+
+window.Pages = Pages;
