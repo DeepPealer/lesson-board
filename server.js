@@ -91,6 +91,14 @@ function patchRoomState(room, packet) {
 }
 
 const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && new URL(req.url, 'http://localhost').pathname === '/api/collab/health') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
+    res.end(JSON.stringify({ ok: true, realtime: 'websocket', connectedClients: wss.clients.size }));
+    return;
+  }
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405);
     res.end('Method not allowed');
@@ -141,8 +149,9 @@ function isAllowedWebSocketOrigin(req) {
 
   // The Cloudflare Quick Tunnel hostname is the effective public origin.
   const isQuickTunnel = origin.protocol === 'https:' && /^[a-z0-9-]+\.trycloudflare\.com$/i.test(origin.hostname);
-  const loopbackHost = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host);
-  return isQuickTunnel && loopbackHost;
+  // Quick Tunnel proxies can rewrite Host independently of the public URL.
+  // Browsers still provide the public trycloudflare.com Origin.
+  return isQuickTunnel;
 }
 
 server.on('upgrade', (req, socket, head) => {
