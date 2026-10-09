@@ -977,3 +977,6 @@ const Collab = (() => {
     getUserColor: () => userColor
   };
 })();
+
+// Allow widgets and other classic scripts to discover the collaboration API.
+window.Collab = Collab;
